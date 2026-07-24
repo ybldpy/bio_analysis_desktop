@@ -21,6 +21,33 @@ export const analysisPipelineTypeCodes = Object.freeze({
   metagenomeShotgun: 401
 })
 
+
+export interface ReferenceGenomeMeta {
+  genomeLength: string
+  version: string
+}
+
+export interface ReferenceGenome {
+  refId: number
+  speciesName: string
+  sourceDB: string
+  taxId: number
+  meta: ReferenceGenomeMeta
+  accessions: string[]
+  isSegment: boolean
+}
+
+export interface FetchReferenceGenomeResult {
+  referenceGenomes: ReferenceGenome[]
+  totalRecords: number
+}
+
+interface MockReferenceGenomeSpecies {
+  name: string
+  taxId: number
+  genomeLength: number
+}
+
 let currentMockMode = AnalysisTaskMockMode.RANDOM
 
 /**
@@ -34,7 +61,7 @@ export function setAnalysisTaskMockMode(mode) {
   currentMockMode = mode
 }
 
-const mockReferenceGenomeSpecies = [
+const mockReferenceGenomeSpecies: MockReferenceGenomeSpecies[] = [
   { name: 'Escherichia coli', taxId: 562, genomeLength: 4.64 },
   { name: 'Staphylococcus aureus', taxId: 1280, genomeLength: 2.82 },
   { name: 'Klebsiella pneumoniae', taxId: 573, genomeLength: 5.39 },
@@ -50,22 +77,32 @@ const mockReferenceGenomeSpecies = [
 ]
 
 
-const mockReferenceGenomes = mockReferenceGenomeSpecies.flatMap((species, speciesIndex) =>
+const mockReferenceGenomes: ReferenceGenome[] = mockReferenceGenomeSpecies.flatMap((species, speciesIndex) =>
   Array.from({ length: 5 }, (_, strainIndex) => {
     const index = speciesIndex * 5 + strainIndex + 1
 
     return {
       refId: index,
-      accession: `GCF_${String(900000000 + index).padStart(9, '0')}.${strainIndex + 1}`,
       speciesName: `${species.name} strain MOCK-${strainIndex + 1}`,
-      taxId: species.taxId * 100 + strainIndex,
-      genomeLength: `${(species.genomeLength + strainIndex * 0.03).toFixed(2)} Mb`,
-      version: `v${strainIndex + 1}`
+      sourceDB: 'NCBI RefSeq',
+      taxId: species.taxId,
+      meta: {
+        genomeLength: `${(species.genomeLength + strainIndex * 0.03).toFixed(2)} Mb`,
+        version: `v${strainIndex + 1}`
+      },
+      accessions: [
+        `GCF_${String(900000000 + index).padStart(9, '0')}.${strainIndex + 1}`
+      ],
+      isSegment: false
     }
   })
 )
 
-export async function fetchReferenceGenomeList(query, start, size) {
+export async function fetchReferenceGenomeList(
+  query: string,
+  start: number,
+  size: number
+): Promise<FetchReferenceGenomeResult> {
   await new Promise((resolve) => {
     setTimeout(resolve, 500)
   })
@@ -77,10 +114,11 @@ export async function fetchReferenceGenomeList(query, start, size) {
   const filteredReferenceGenomes = normalizedQuery
     ? mockReferenceGenomes.filter((referenceGenome) =>
         [
-          referenceGenome.ref_id,
-          referenceGenome.accession,
+          referenceGenome.refId,
           referenceGenome.speciesName,
-          referenceGenome.taxId
+          referenceGenome.taxId,
+          referenceGenome.sourceDB,
+          ...referenceGenome.accessions
         ].some((field) => String(field).toLowerCase().includes(normalizedQuery))
       )
     : mockReferenceGenomes
@@ -95,43 +133,7 @@ export async function fetchReferenceGenomeList(query, start, size) {
 }
 
 
-export async function fetchProjectList(){
 
-
-    await new Promise((resolve) => {
-    setTimeout(resolve, 500)
-  })
-
-  return [
-    {
-      id: 1001,
-      code: 'PRJ-2026-018',
-      name: '肠道致病菌监测（第三批）',
-      status: 'ACTIVE'
-    },
-    {
-      id: 1002,
-      code: 'PRJ-2026-017',
-      name: '呼吸道病毒哨点监测',
-      status: 'ACTIVE'
-    },
-    {
-      id: 1003,
-      code: 'PRJ-2026-014',
-      name: '院感菌株溯源分析',
-      status: 'COMPLETED'
-    },
-    {
-      id: 1004,
-      code: 'PRJ-2026-011',
-      name: '食品来源沙门氏菌调查',
-      status: 'ARCHIVED'
-    }
-  ]
-
-
-
-}
 
 export async function canUseBatchPrefix(prefix, projectId) {
   // TODO: replace with backend API.
@@ -163,23 +165,41 @@ function getEffectiveMockMode() {
 }
 
 function createMockError(message, code) {
-  const error = new Error(message)
-  error.code = code
-  return error
+  return Object.assign(new Error(message), { code })
 }
 
-/*
-taskBuildRequest: {
+interface AnalysisTaskBuildRequest {
   analysisName: string,
   projectId: number,
   pipelineType: number,
   pipelineStageParameters: {
-    taxId: number,
+    taxId: number | null,
     extraParameters: null
   }
 }
-*/
-async function doAnalysisTaskRequest(taskBuildRequestList) {
+
+export interface CreatedAnalysisTask {
+  name: string
+  id: string
+}
+
+export type AnalysisTaskBuildResponse =
+  | {
+      success: true
+      code: 'SUCCESS'
+      message: string
+      nameIdList: CreatedAnalysisTask[]
+    }
+  | {
+      success: false
+      code: string
+      message: string
+      nameIdList: null
+    }
+
+async function doAnalysisTaskRequest(
+  taskBuildRequestList: AnalysisTaskBuildRequest[]
+): Promise<AnalysisTaskBuildResponse> {
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       const mode = getEffectiveMockMode()
@@ -217,7 +237,12 @@ async function doAnalysisTaskRequest(taskBuildRequestList) {
   })
 }
 
-export async function requestBuildAnalysisTasks(tasks, projectId, pipelineType, referenceTaxId) {
+export async function requestBuildAnalysisTasks(
+  tasks: Array<{ name: string }>,
+  projectId: number,
+  pipelineType: number,
+  referenceTaxId: number | null
+): Promise<AnalysisTaskBuildResponse> {
   const taskBuildRequestList = tasks.map((task) => ({
     analysisName: task.name,
     projectId,

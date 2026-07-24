@@ -4,22 +4,39 @@ import { ElMessage, genFileId, UploadInstance, UploadProps, UploadRawFile, Uploa
 import {
   analysisPipelineTypeCodes,
   canUseBatchPrefix,
+  fetchReferenceGenomeList,
+  ReferenceGenome
+} from '../../api/analysisTaskBuild'
+import {
   fetchProjectList,
-  fetchReferenceGenomeList
-} from '../api/analysisTaskBuild.js'
+  BioProject
+} from '../../api/bioProject'
+import {
+  AnalysisTask,
+  AnalysisTaskDataType,
+  setTaskUploadRequest,
+  type TaskUploadRequest
+} from './taskCreationCommon'
 
-const emit = defineEmits(['cancel', 'submitted'])
+const emit = defineEmits(['cancel', 'submitted', 'upload'])
 const activeSectionId = ref(0)
 const activeSectionStack = []
 const activeTaskIndex = ref(0)
 let taskSequence = 1
 
-interface AnalysisTask {
-  name: string,
-  r1: UploadUserFile[],
+
+
+interface UserTaskInputSlot {
+  r1: UploadUserFile[], 
   r2: UploadUserFile[],
-  assembly: UploadUserFile[], 
-  customerReferenceGenome: UploadUserFile[],
+  assembly: UploadUserFile[]
+  type: AnalysisTaskDataType
+}
+
+
+interface UserCreateAnalysisTask {
+  name: string,
+  inputSlots: UserTaskInputSlot[]
   type: 0 | 1 | 2
 }
 
@@ -27,7 +44,8 @@ interface AnalysisTasksBuildJob {
   projectId: number | null,
   analysisPipelineTypeCode: number | null
   referenceGenomeId: number | null,
-  tasks: AnalysisTask[]
+  customerReferenceGenome: UploadUserFile[],
+  tasks: UserCreateAnalysisTask[]
 }
 
 
@@ -146,13 +164,14 @@ const onBatchNameChange = (() => {
   }
 })()
 
-function createTask(source = {}, name): AnalysisTask {
+function createTask(source = {}, name): UserCreateAnalysisTask {
   return {
     name: name,
-    r1: [],
-    r2: [],
-    assembly: [],
-    customerReferenceGenome: [],
+    inputSlots: [{
+      r1: [],
+      r2: [],
+      assembly: []
+    }],
     type: 0
   }
 }
@@ -167,7 +186,7 @@ analysisTasksBuildJob.tasks.push(createTask(null, createTaskName(batchNamePrefix
 const analysisTypes = {
   bacteria: {
     id: 'bacteria',
-    title: '细菌全基因组',
+    title: '细菌全基因组分析',
     subtitle: 'Bacterial WGS',
     icon: 'DataAnalysis',
     color: '#167c6b',
@@ -176,7 +195,7 @@ const analysisTypes = {
   },
   virus: {
     id: 'virus',
-    title: '病毒全基因组',
+    title: '病毒全基因组分析',
     subtitle: 'Viral WGS',
     icon: 'Histogram',
     color: '#456fa8',
@@ -209,7 +228,7 @@ const analysisTypes = {
   },
   metagenome: {
     id: 'metagenome',
-    title: '宏基因组 / mNGS',
+    title: '宏基因组 / mNGS分析',
     subtitle: 'Metagenomics',
     icon: 'Grid',
     color: '#b6792c',
@@ -239,18 +258,62 @@ const pipelineTypeSelection = reactive({
   specificTypeId: null
 })
 
+const selectedTypeSelectionName = computed(() => {
+  let typeName = ''
+  let specificTypeName = ''
+
+  const type = Object.values(analysisTypes).find((type) => type.id === pipelineTypeSelection.typeId)
+  if(type === undefined){
+    return {
+      typeName: null,
+      specificTypeName: null
+    }
+  }
+
+  if(!!type.specificTypes){
+    return {
+      typeName: type.title,
+      specificTypeName: type.title
+    }
+  }
+
+  //ts-ignore
+  const specificType = Object.values(type.specificTypes).find((specificType) => {specificType.id === pipelineTypeSelection.specificTypeId})
+  if(!!specificType){
+    return {
+      typeName: type.title,
+      specificTypeName: "--"
+    }
+  }
+
+  return {
+    typeName: type.title,
+    specificTypeName: specificType.title
+  }
+
+
+})
+
+
+const selectedReference = ref<ReferenceGenome | null>(null)
+const selectedProject = computed<BioProject | null> (() => {
+  const project = projectList.value.find((project) => {return project.projectId === analysisTasksBuildJob.projectId})
+  if(project === undefined){
+    return null
+  }
+  return project
+})
 
 const selectedReferenceLabel = computed(() =>
   selectedReference.value
-    ? `${selectedReference.value.accession} · ${selectedReference.value.speciesName}`
+    ? `${selectedReference.value.accessions.join('、')} · ${selectedReference.value.speciesName}`
     : '--'
 )
 const activeTask = computed(() => analysisTasksBuildJob.tasks[activeTaskIndex.value])
-const selectedReference = ref(null)
 
 
 const referenceListLoading = ref(false)
-const referenceList = ref([])
+const referenceList = ref<ReferenceGenome[]>([])
 const referenceGenomePageInfoAtSearchCondition = reactive({
   search: '',
   page: 1,
@@ -280,7 +343,7 @@ async function loadReferenceGenomeList(query, pageIndex, pageSize) {
   referenceList.value = fetchedReferenceGenomeResult.referenceGenomes
 }
 
-const projectList = ref([])
+const projectList = ref<BioProject[]>([])
 const projectListLoading = ref(false)
 
 async function initProjectList() {
@@ -326,8 +389,8 @@ function removeTask(index) {
 }
 
 function uploadedFileCount(task) {
-  if (task.dataType === 'paired') return task.r1Files.length + task.r2Files.length
-  return task.dataFiles.length
+  if (task.type === 0) return task.r1Files.length + task.r2Files.length
+  return 0
 }
 
 function uploadReady(task) {
@@ -349,12 +412,20 @@ function displayTaskName(task, index) {
   return task.name
 }
 
-function selectReference(reference) {
+function selectReference(reference: ReferenceGenome) {
   selectedReference.value = reference
 }
 
 
 function doCheckForBuildJobBeforeConfirmation() {
+
+  if(!batchNamePrefix?.value.trim()){
+    return {
+      satisfied: false, 
+      msg: '未给任务命名'
+    }
+  }
+
   const notSatisfiedTaskList =
     analysisTasksBuildJob.tasks.filter((task) => {
       switch (task.type) {
@@ -455,9 +526,42 @@ function next() {
   activeSectionId.value = nextSectionId
 }
 
+function getRawFile(
+  files: UploadUserFile[]
+): File | null {
+  return files[0]?.raw ?? null
+}
+
 function submit() {
-  ElMessage.success(`已提交 ${analysisTasksBuildJob.tasks.length} 个任务并进入分析队列`)
-  emit('submitted')
+  if (
+    !selectedProject.value ||
+    analysisTasksBuildJob.analysisPipelineTypeCode === null
+  ) {
+    ElMessage.warning('任务创建信息不完整')
+    return
+  }
+
+  const request: TaskUploadRequest = {
+    project: selectedProject.value,
+    referenceGenome: selectedReference.value,
+    analysisType: analysisTasksBuildJob.analysisPipelineTypeCode,
+    customerReferenceGenome: null,
+    tasks: analysisTasksBuildJob.tasks.map((task) => ({
+      name: task.name,
+      type: task.type,
+      inputSlots: task.inputSlots.map((slot) => {
+        return {
+          r1: getRawFile(slot.r1),
+          r2: getRawFile(slot.r2),
+          contigs: getRawFile(slot.assembly),
+          type: slot.type
+        }
+      })
+    }))
+  }
+
+  setTaskUploadRequest(request)
+  emit('upload')
 }
 
 const uploadProps = {
@@ -535,7 +639,7 @@ function canMoveBackward() {
 }
 
 function hasNextSection() {
-  return true
+  return sectionMap.comfirmation !== activeSectionId.value
 }
 
 function selectAnalysisType(id:string) {
@@ -551,7 +655,6 @@ function selectSpeceficType(speceficTypeId) {
   pipelineTypeSelection.specificTypeId = speceficTypeId
 }
 
-function 
 
 </script>
 
@@ -577,8 +680,8 @@ function
         </div>
         <el-form label-position="top"><el-form-item label="所属项目" required><el-select
               v-model="analysisTasksBuildJob.projectId" filterable placeholder="请选择项目" style="width: 100%"><el-option
-                v-for="item in projectList" :key="item.id" :label="item.name"
-                :value="item.id" /></el-select></el-form-item></el-form>
+                v-for="item in projectList" :key="item.projectId" :label="item.projectName"
+                :value="item.projectId" /></el-select></el-form-item></el-form>
         <el-divider />
         <div class="section-heading">
           <span>02</span>
@@ -673,18 +776,21 @@ function
           </div>
 
           <div v-loading="referenceListLoading" element-loading-text="正在加载参考基因组..." class="reference-browser">
-            <el-table :data="referenceList" row-key="ref_id" highlight-current-row class="reference-table"
+            <el-table :data="referenceList" row-key="refId" highlight-current-row class="reference-table"
               @row-click="selectReference">
               <el-table-column width="52" align="center">
                 <template #default="{ row }">
                   <el-radio :model-value="selectedReference?.refId" :value="row.refId" @change="selectReference(row)" />
                 </template>
               </el-table-column>
-              <!-- <el-table-column prop="accession" label="Accession" min-width="145" /> -->
+              <el-table-column label="Accession" min-width="145">
+                <template #default="{ row }">{{ row.accessions.join('、') }}</template>
+              </el-table-column>
               <el-table-column prop="speciesName" label="物种" min-width="230" />
               <el-table-column prop="taxId" label="Tax ID" width="110" />
-              <el-table-column prop="genomeLength" label="基因组长度" width="110" />
-              <el-table-column prop="version" label="版本" width="75" />
+              <el-table-column prop="sourceDB" label="来源" width="120" />
+              <el-table-column prop="meta.genomeLength" label="基因组长度" width="110" />
+              <el-table-column prop="meta.version" label="版本" width="75" />
             </el-table>
 
             <div class="reference-pagination">
@@ -706,7 +812,7 @@ function
           <div>
             <span>已选择参考基因组</span>
             <strong>{{ selectedReferenceLabel }}</strong>
-            <small>Tax ID {{ selectedReference.taxId }} · {{ selectedReference.genomeLength }}</small>
+            <small>Tax ID {{ selectedReference.taxId }} · {{ selectedReference.meta.genomeLength }}</small>
           </div>
           <el-button link type="primary" @click="selectedReference = null">
             重新选择
@@ -714,7 +820,7 @@ function
         </div>
       </div>
 
-      <div v-else-if="sectionMap.taskCreate" class="step-content batch-step">
+      <div v-else-if="activeSectionId === sectionMap.taskCreate" class="step-content batch-step">
         <div class="batch-heading">
           <div class="section-heading">
             <span>01</span>
@@ -819,7 +925,7 @@ function
                 <strong>{{ displayTaskName(item, index) }}</strong>
                 <small>{{
                   { 0: '双端 FASTQ', 1: '单端 FASTQ', 2: 'Contigs FASTA' }[
-                  item.type
+                  item.inputSlots[0].type
                   ]
                   }}</small>
               </span>
@@ -870,15 +976,15 @@ function
               <el-radio-button :value='1'>单端测序 FASTQ</el-radio-button>
               <el-radio-button :value='2'>已组装 Contigs</el-radio-button>
             </el-radio-group>
-            <div v-if="activeTask.type === 0" class="upload-grid">
-              <el-upload ref="r1UploadRef" v-model:file-list="activeTask.r1" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, r1UploadRef)}">
+            <div v-if="activeTask.inputSlots[0].type === 0" class="upload-grid">
+              <el-upload ref="r1UploadRef" v-model:file-list="activeTask.inputSlots[0].r1" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, r1UploadRef)}">
                 <el-icon class="upload-icon">
                   <UploadFilled />
                 </el-icon>
                 <div class="upload-title">上传 R1 文件</div>
                 <div class="upload-tip">正向 reads，支持 .fastq / .fq / .gz</div>
               </el-upload>
-              <el-upload ref="r2UploadRef" v-model:file-list="activeTask.r2" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, r2UploadRef)}">
+              <el-upload ref="r2UploadRef" v-model:file-list="activeTask.inputSlots[0].r2" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, r2UploadRef)}">
                 <el-icon class="upload-icon">
                   <UploadFilled />
                 </el-icon>
@@ -886,8 +992,8 @@ function
                 <div class="upload-tip">反向 reads，需与 R1 成对</div>
               </el-upload>
             </div>
-            <div v-else-if="activeTask.type === 1" class="upload-single">
-              <el-upload ref="r1UploadRef" v-model:file-list="activeTask.r1" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, r1UploadRef)}">
+            <div v-else-if="activeTask.inputSlots[0].type === 1" class="upload-single">
+              <el-upload ref="r1UploadRef" v-model:file-list="activeTask.inputSlots[0].r1" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, r1UploadRef)}">
                 <el-icon class="upload-icon">
                   <UploadFilled />
                 </el-icon>
@@ -900,7 +1006,7 @@ function
               </el-upload>
             </div>
             <div v-else class="upload-single">
-              <el-upload :ref="contigUploadRef" v-model:file-list="activeTask.assembly" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, contigUploadRef)}">
+              <el-upload ref="contigUploadRef" v-model:file-list="activeTask.inputSlots[0].assembly" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, contigUploadRef)}">
                 <el-icon class="upload-icon">
                   <UploadFilled />
                 </el-icon>
@@ -918,7 +1024,7 @@ function
         </div>
       </div>
 
-      <div v-else class="step-content confirm-step">
+      <div v-else-if="activeSectionId === sectionMap.comfirmation" class="step-content confirm-step">
         <div class="confirm-icon">
           <el-icon>
             <DocumentChecked />
@@ -927,16 +1033,15 @@ function
         <h2>确认任务信息</h2>
         <p>本批次包含 {{ analysisTasksBuildJob.tasks.length }} 个任务，提交后将分别进入分析队列。</p>
         <el-descriptions :column="2" border class="summary">
-          <el-descriptions-item label="所属项目">{{projectList.find(
-            (project) =>
-              project.id === analysisTasksBuildJob.projectId
-          )?.name ?? '--'}}</el-descriptions-item>
-          <el-descriptions-item label="分析类型">{{ Object.values(analysisTypes).find((type) => type.id === pipelineTypeSelection.typeId).title }}</el-descriptions-item>
-          <el-descriptions-item v-if="!!pipelineTypeSelection.specificTypeId" label="具体类型"></el-descriptions-item>
+          <el-descriptions-item label="所属项目">{{ selectedProject.projectName }}</el-descriptions-item>
+          <el-descriptions-item label="分析类型">{{ selectedTypeSelectionName.typeName }}</el-descriptions-item>
+          <el-descriptions-item label="具体类型">
+            {{ selectedTypeSelectionName.specificTypeName }}
+          </el-descriptions-item>
           <el-descriptions-item label="任务名称前缀">{{ batchNamePrefix }}</el-descriptions-item>
           <el-descriptions-item label="任务数量">{{ analysisTasksBuildJob.tasks.length }} 个</el-descriptions-item>
-          <el-descriptions-item v-if="form.analysisType === 'virus'" label="参考基因组">
-            {{ selectedReferenceLabel }}
+          <el-descriptions-item v-if="pipelineTypeSelection.typeId === analysisTypes.virus.id && pipelineTypeSelection.specificTypeId === analysisTypes.virus.specificTypes.generalVirus.id" label="参考基因组">
+            {{ selectedReference.speciesName }}
           </el-descriptions-item>
         </el-descriptions>
         <div class="confirm-list">
@@ -947,7 +1052,7 @@ function
             <el-table-column type="index" label="#" width="48" />
             <el-table-column label="任务名称" min-width="180">
               <template #default="{ row, $index }">
-                {{ displayTaskName(row, $index) }}
+                {{ row.name }}
                 <el-tag v-if="row.customName" size="small" type="info">自定义</el-tag>
               </template>
             </el-table-column>
@@ -957,20 +1062,20 @@ function
             <el-table-column label="数据类型" min-width="145">
               <template #default="{ row }">
                 {{
-                  { paired: '双端测序 FASTQ', single: '单端测序 FASTQ', contigs: '已组装 Contigs' }[
-                  row.dataType
+                  { 0: '双端测序 FASTQ', 1: '单端测序 FASTQ', 2: '已组装 Contigs' }[
+                  row.type
                   ]
                 }}
               </template>
             </el-table-column>
-            <el-table-column label="文件" width="110">
+            <!-- <el-table-column label="文件" width="110">
               <template #default="{ row }">
                 <el-tag v-if="uploadReady(row)" type="success" size="small">
                   {{ uploadedFileCount(row) }} 个文件
                 </el-tag>
                 <el-tag v-else type="warning" size="small">待补充</el-tag>
               </template>
-            </el-table-column>
+            </el-table-column> -->
           </el-table>
         </div>
         <!-- <el-checkbox checked>我已确认全部任务信息和上传文件无误</el-checkbox> -->

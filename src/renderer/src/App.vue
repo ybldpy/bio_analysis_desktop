@@ -4,7 +4,8 @@ import { ElMessage } from 'element-plus'
 import DashboardView from './views/DashboardView.vue'
 import ProjectsView from './views/ProjectsView.vue'
 import TasksView from './views/TasksView.vue'
-import NewTaskView from './views/NewTaskView.vue'
+import NewTaskView from './views/analysisTaskCreation/index.vue'
+import TaskUploadView from './views/analysisTaskCreation/TaskUpload.vue'
 import TaskDetailView from './views/TaskDetailView.vue'
 import ResultsView from './views/ResultsView.vue'
 import { tasks } from './data/mockData'
@@ -38,6 +39,7 @@ const pageTitle = computed(() => {
     .flatMap((group) => group.items)
     .find((menu) => menu.id === activePage.value)
   if (activePage.value === 'new-task') return '新建分析任务'
+  if (activePage.value === 'task-upload') return '上传任务数据'
   if (activePage.value === 'task-detail') return '任务详情'
   return item?.label || '页面'
 })
@@ -49,6 +51,7 @@ const currentComponent = computed(
       projects: ProjectsView,
       tasks: TasksView,
       'new-task': NewTaskView,
+      'task-upload': TaskUploadView,
       'task-detail': TaskDetailView,
       results: ResultsView
     })[activePage.value]
@@ -98,7 +101,7 @@ function handleBack() {
               {
                 active:
                   activePage === item.id ||
-                  (item.id === 'tasks' && ['new-task', 'task-detail'].includes(activePage))
+                  (item.id === 'tasks' && ['new-task', 'task-upload', 'task-detail'].includes(activePage))
               }
             ]"
             @click="navigate(item.id)"
@@ -202,6 +205,7 @@ function handleBack() {
             @navigate="navigate"
             @view-task="viewTask"
             @cancel="handleBack"
+            @upload="navigate('task-upload')"
             @submitted="navigate('tasks')"
             @back="handleBack"
           />
