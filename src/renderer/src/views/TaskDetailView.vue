@@ -1,14 +1,643 @@
-<script setup>
-import { computed, ref } from 'vue'
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import StatusTag from '../components/StatusTag.vue'
-import { pipelineNodes, resultFiles } from '../data/mockData'
+import { pipelineNodes, resultFiles, tasks } from '../data/mockData'
+import type {
+  AnalysisPipeline,
+  AnalysisPipelineStage
+} from '../common/types/analysisPipeline'
+import {
+  analysisPipelineStageStatus,
+  pipelineStageTypeCode,
+  pipelineTypeCode,
+  requestPipeline,
+  requestPipelineStages
+} from '../api/analysisPipeline'
+import { ElMessage } from 'element-plus'
+import { Graph, Selection } from '@antv/x6'
+import { getAnalysisPipelineTypeName } from './analysisTaskCreation/taskCreationCommon.js'
 
-defineProps({ task: { type: Object, required: true } })
+
+
+Graph.registerNode(
+  'pipeline-stage',
+  {
+    inherit: 'rect',
+    width: 170,
+    height: 64,
+
+    markup: [
+      {
+        tagName: 'rect',
+        selector: 'body'
+      },
+      {
+        tagName: 'circle',
+        selector: 'statusBadge'
+      },
+      {
+        tagName: 'text',
+        selector: 'statusIcon'
+      },
+      {
+        tagName: 'text',
+        selector: 'stageName'
+      },
+      {
+        tagName: 'text',
+        selector: 'statusLabel'
+      }
+    ],
+
+    attrs: {
+      body: {
+        refWidth: '100%',
+        refHeight: '100%',
+        fill: '#ffffff',
+        stroke: '#dcdfe6',
+        strokeWidth: 1.5,
+        rx: 9,
+        ry: 9
+      },
+
+      statusBadge: {
+        cx: 23,
+        cy: 32,
+        r: 13,
+        fill: '#909399'
+      },
+
+      statusIcon: {
+        x: 23,
+        y: 32,
+        fill: '#ffffff',
+        fontSize: 15,
+        fontWeight: 700,
+        textAnchor: 'middle',
+        textVerticalAnchor: 'middle'
+      },
+
+      stageName: {
+        x: 46,
+        y: 25,
+        fill: '#303133',
+        fontSize: 13,
+        fontWeight: 600,
+        textAnchor: 'start'
+      },
+
+      statusLabel: {
+        x: 46,
+        y: 44,
+        fill: '#909399',
+        fontSize: 10,
+        textAnchor: 'start'
+      }
+    }
+  },
+  true
+)
+
+
+const props = defineProps<{
+  pipelineId: number
+}>()
 const emit = defineEmits(['back'])
 const activeTab = ref('pipeline')
 const selectedNodeId = ref('species')
 const logVisible = ref(false)
 const selectedNode = computed(() => pipelineNodes.find((item) => item.id === selectedNodeId.value))
+const pipelineLoading = ref(true)
+const initPipelineAndStagesFailed = ref(false)
+
+type StageStatus = 'waitting' | 'running' | 'failed' | 'actionRequired' | 'notApplicable'
+
+
+interface StageNodeAppearance {
+  label: string
+  icon: string
+  color: string
+  background: string
+  borderDasharray?: string
+  opacity?: number
+  className?: string
+}
+
+interface PipelineDependencyConfig {
+  entries: number[]
+  stagesDependency: Record<number, number[]>
+}
+
+const pipelineDependencyConfigs = {
+  regularVirusRead: {
+    entries: [pipelineStageTypeCode.readInspect],
+    stagesDependency: {
+      [pipelineStageTypeCode.qc]: [pipelineStageTypeCode.readInspect],
+      [pipelineStageTypeCode.mapping]: [pipelineStageTypeCode.qc],
+      [pipelineStageTypeCode.variantCall]: [pipelineStageTypeCode.mapping],
+      [pipelineStageTypeCode.consensus]: [pipelineStageTypeCode.variantCall]
+    }
+  },
+  regularVirusAssembly: {
+    entries: [pipelineStageTypeCode.referenceComparison],
+    stagesDependency: {
+
+    }
+  },
+  covid19: {
+    entries: [pipelineStageTypeCode.readInspect],
+    stagesDependency: {
+      [pipelineStageTypeCode.qc]: [pipelineStageTypeCode.readInspect],
+      [pipelineStageTypeCode.mapping]: [pipelineStageTypeCode.qc],
+      [pipelineStageTypeCode.variantCall]: [pipelineStageTypeCode.mapping],
+      [pipelineStageTypeCode.consensus]: [pipelineStageTypeCode.variantCall],
+      [pipelineStageTypeCode.snpAnnotation]: [pipelineStageTypeCode.variantCall]
+    }
+  },
+  bacteriaRead: {
+    entries: [pipelineStageTypeCode.readInspect],
+    stagesDependency: {
+      [pipelineStageTypeCode.qc]: [pipelineStageTypeCode.readInspect],
+      [pipelineStageTypeCode.assembly]: [pipelineStageTypeCode.qc],
+      [pipelineStageTypeCode.taxonomy]: [pipelineStageTypeCode.assembly],
+      [pipelineStageTypeCode.amr]: [pipelineStageTypeCode.assembly],
+      [pipelineStageTypeCode.virulence]: [pipelineStageTypeCode.assembly],
+      [pipelineStageTypeCode.mlst]: [pipelineStageTypeCode.assembly],
+      [pipelineStageTypeCode.cgmlst]: [pipelineStageTypeCode.taxonomy],
+      [pipelineStageTypeCode.serotype]: [pipelineStageTypeCode.taxonomy]
+    }
+  },
+  bacteriaAssembly: {
+    entries: [pipelineStageTypeCode.taxonomy, pipelineStageTypeCode.amr, pipelineStageTypeCode.virulence, pipelineStageTypeCode.mlst],
+    stagesDependency: {
+      [pipelineStageTypeCode.cgmlst]: [pipelineStageTypeCode.taxonomy],
+      [pipelineStageTypeCode.serotype]: [pipelineStageTypeCode.taxonomy]
+    }
+  }
+} satisfies Record<string, PipelineDependencyConfig>
+
+const stageNodeAppearance: Record<
+  number,
+  StageNodeAppearance
+> = {
+  [analysisPipelineStageStatus.pending]: {
+    label: '等待中',
+    icon: '…',
+    color: '#909399',
+    background: '#f5f7fa'
+  },
+  [analysisPipelineStageStatus.queuing]: {
+    label: '等待中',
+    icon: '…',
+    color: '#909399',
+    background: '#f5f7fa'
+  },
+
+  [analysisPipelineStageStatus.running]: {
+    label: '运行中',
+    icon: '↻',
+    color: '#409eff',
+    background: '#ecf5ff',
+    className: 'pipeline-node-running'
+  },
+
+  [analysisPipelineStageStatus.completed]: {
+    label: '已完成',
+    icon: '✓',
+    color: '#67c23a',
+    background: '#f0f9eb'
+  },
+
+  [analysisPipelineStageStatus.failed]: {
+    label: '失败',
+    icon: '×',
+    color: '#f56c6c',
+    background: '#fef0f0'
+  },
+
+  [analysisPipelineStageStatus.actionRequired]: {
+    label: '需要处理',
+    icon: '!',
+    color: '#e6a23c',
+    background: '#fdf6ec'
+  },
+
+  [analysisPipelineStageStatus.notApplicable]: {
+    label: '不适用',
+    icon: '—',
+    color: '#a8abb2',
+    background: '#f5f7fa',
+    borderDasharray: '5 3',
+    opacity: 0.7
+  }
+}
+
+interface AnalysisPipelineStageViewNode {
+  bindingStageId: number
+  stageName: string
+  stageStatus: StageStatus
+}
+
+const analysisPipeline = ref<AnalysisPipeline | null>(null)
+const pipelineStages = ref<AnalysisPipelineStage[]>([])
+const currentFocusStage = ref<AnalysisPipelineStage | null>(null)
+const flowGraphContainer = ref<HTMLElement | null>(null)
+let flowGraph: Graph | null = null
+
+
+function getCurrentPipelineDependencyConfig():
+  | PipelineDependencyConfig
+  | null {
+
+
+  let isInputReadLevel = false
+
+  if (analysisPipeline.value.pipelineType === pipelineTypeCode.covid19) {
+    isInputReadLevel = true
+  } else {
+    isInputReadLevel = pipelineStages.value.some((stage) => stage.stageType === pipelineStageTypeCode.qc || stage.stageType === pipelineStageTypeCode.readInspect)
+  }
+
+  switch (analysisPipeline.value.pipelineType) {
+    case pipelineTypeCode.regularVirus:
+      return isInputReadLevel ? pipelineDependencyConfigs.regularVirusRead : pipelineDependencyConfigs.regularVirusAssembly
+    case pipelineTypeCode.covid19:
+      return pipelineDependencyConfigs.covid19
+    case pipelineTypeCode.bacteria:
+      return isInputReadLevel
+        ? pipelineDependencyConfigs.bacteriaRead
+        : pipelineDependencyConfigs.bacteriaAssembly
+    default:
+      return null
+  }
+}
+
+function getStageDepths(
+  dependencyByStageId: Map<number, number[]>
+): Map<number, number> {
+  const depths = new Map<number, number>()
+  const visiting = new Set<number>()
+
+  function getDepth(stageId: number): number {
+    const cachedDepth = depths.get(stageId)
+    if (cachedDepth !== undefined) {
+      return cachedDepth
+    }
+
+    if (visiting.has(stageId)) {
+      throw new Error('Pipeline Stage 依赖中存在循环')
+    }
+
+    visiting.add(stageId)
+    const dependencies =
+      dependencyByStageId.get(stageId) ?? []
+    const depth =
+      dependencies.length === 0
+        ? 0
+        : Math.max(
+          ...dependencies.map(dependencyStageId =>
+            getDepth(dependencyStageId)
+          )
+        ) + 1
+
+    visiting.delete(stageId)
+    depths.set(stageId, depth)
+    return depth
+  }
+
+  pipelineStages.value.forEach(stage => {
+    getDepth(stage.stageId)
+  })
+
+  return depths
+}
+
+function initPipelineGraph() {
+  if (!flowGraphContainer.value) {
+    throw new Error('Pipeline Graph 容器尚未挂载')
+  }
+
+  flowGraph?.dispose()
+
+  flowGraph = new Graph({
+    container: flowGraphContainer.value,
+    autoResize: true,
+    background: {
+      color: '#fafcfc'
+    },
+    grid: {
+      visible: true,
+      size: 18,
+      type: 'dot',
+      args: {
+        color: '#dfe7e5',
+        thickness: 1
+      }
+    },
+    interacting: {
+      nodeMovable: false,
+      edgeMovable: false
+    },
+    panning: true,
+    mousewheel: {
+      enabled: true,
+      modifiers: ['ctrl', 'meta'],
+      minScale: 0.5,
+      maxScale: 1.5
+    }
+  })
+
+  flowGraph.use(
+    new Selection({
+      enabled: true,
+      multiple: false,
+      rubberband: false,
+      movable: false,
+      showNodeSelectionBox: true,
+      filter: cell => cell.isNode()
+    })
+  )
+
+  const dependencyConfig = getCurrentPipelineDependencyConfig()
+
+  const dependencyByStageId =
+    new Map<number, number[]>()
+  pipelineStages.value.forEach(stage => {
+    dependencyByStageId.set(stage.stageId, [])
+  })
+
+  if (dependencyConfig) {
+    Object.entries(
+      dependencyConfig.stagesDependency
+    ).forEach(([stageType, dependency]) => {
+
+
+      const stage = pipelineStages.value.find((stage) => { return stage.stageType === stageType })
+
+      const dependencyStageIds = pipelineStages.value.filter((stage) => {
+        return dependency.some((dependencyStageType) => { return dependencyStageType === stage.stageType })
+      }).map((stage) => { return stage.stageId })
+
+      dependencyByStageId.set(stage.stageId, dependencyStageIds)
+
+    })
+  } else {
+    console.warn(
+      `尚未配置 Pipeline Type ${analysisPipeline.value?.pipelineType} 的依赖关系`
+    )
+  }
+
+  const stageDepths = getStageDepths(
+    dependencyByStageId
+  )
+  const nextRowByDepth = new Map<number, number>()
+
+
+
+  pipelineStages.value.forEach(stage => {
+    const depth = stageDepths.get(stage.stageId) ?? 0
+    const row = nextRowByDepth.get(depth) ?? 0
+    nextRowByDepth.set(depth, row + 1)
+
+    const nodeViewConfig = stageNodeAppearance[stage.status]
+
+    flowGraph!.addNode({
+      id: String(stage.stageId),
+      shape: 'rect',
+      x: 40 + depth * 210,
+      y: 35 + row * 90,
+      width: 160,
+      height: 58,
+      label: `${stage.stageName}\n${nodeViewConfig.label}`,
+      attrs: {
+        body: {
+          fill: nodeViewConfig.background,
+          stroke: nodeViewConfig.color,
+          strokeWidth:
+            stage.status ===
+              analysisPipelineStageStatus.running
+              ? 2
+              : 1.5,
+          strokeDasharray:
+            nodeViewConfig.borderDasharray ?? '',
+          opacity: nodeViewConfig.opacity ?? 1,
+          class: nodeViewConfig.className ?? ''
+        },
+
+        statusBadge: {
+          fill: nodeViewConfig.color
+        },
+
+        statusIcon: {
+          text: nodeViewConfig.icon
+        },
+
+        stageName: {
+          text: stage.stageName
+        },
+
+        statusLabel: {
+          text: nodeViewConfig.label,
+          fill: nodeViewConfig.color
+        }
+      }
+    })
+  })
+
+  dependencyByStageId.forEach(
+    (dependencyStageIds, stageId) => {
+      dependencyStageIds.forEach(dependencyStageId => {
+        flowGraph!.addEdge({
+          source: String(dependencyStageId),
+          target: String(stageId),
+          router: {
+            name: 'manhattan',
+            args: {
+              padding: 16
+            }
+          },
+          connector: {
+            name: 'rounded',
+            args: {
+              radius: 8
+            }
+          },
+          attrs: {
+            line: {
+              stroke: '#aebdba',
+              strokeWidth: 1.5,
+              targetMarker: {
+                name: 'block',
+                width: 8,
+                height: 6
+              }
+            }
+          },
+          zIndex: 0
+        })
+      })
+    }
+  )
+
+  flowGraph.on('node:selected', ({ node }) => {
+    const stageId = Number(node.id)
+    currentFocusStage.value =
+      pipelineStages.value.find(
+        stage => stage.stageId === stageId
+      ) ?? null
+  })
+
+  const initialStageId = Array.from(dependencyByStageId).find(([stageId, dependencyIds]) => {
+    return dependencyIds.length === 0
+  })[0]
+
+  const focusedStage = pipelineStages.value.find((stage) => stage.stageId === initialStageId)
+
+
+
+  if (focusedStage) {
+    currentFocusStage.value = focusedStage
+    flowGraph.resetSelection(
+      String(initialStageId)
+    )
+  }
+
+  flowGraph.zoomToFit({
+    padding: 24,
+    maxScale: 1
+  })
+
+}
+
+
+
+const updateStages = (() => {
+
+  let checkLock = true
+
+  return async () => {
+    if (!checkLock) { return; }
+    checkLock = false
+
+    try {
+      const updatedStageList = await requestPipelineStages(analysisPipeline.value.pipelineId)
+      //something error happens in request
+      if (!updatedStageList || updatedStageList.length !== pipelineStages.value.length) {
+        ElMessage.error('更新分析阶段失败：返回的阶段数据不完整')
+        return
+      }
+
+      const idStageMap = new Map<number, AnalysisPipelineStage>()
+      updatedStageList.forEach((stage) => idStageMap.set(stage.stageId, stage))
+      pipelineStages.value.forEach((curStage) => {
+
+        const newStage = idStageMap.get(curStage.stageId)
+        if (newStage.status !== curStage.status) {
+          curStage.status = newStage.status
+          curStage.output = newStage.output
+          updatePipelineStageNode(curStage)
+        }
+      })
+
+
+    } catch (error) {
+      console.error(error)
+      ElMessage.error('更新分析阶段失败，请稍后重试')
+    } finally {
+      checkLock = true
+    }
+
+  }
+})()
+
+
+function updatePipelineStageNode(
+  stage: AnalysisPipelineStage
+) {
+  const node = flowGraph?.getCellById(
+    String(stage.stageId)
+  )
+
+  if (!node || !node.isNode()) {
+    return
+  }
+
+  const appearance =
+    stageNodeAppearance[stage.status]
+
+  node.setData({
+    status: stage.status
+  })
+
+  node.attr({
+    body: {
+      fill: appearance.background,
+      stroke: appearance.color,
+      strokeDasharray:
+        appearance.borderDasharray ?? '',
+      opacity: appearance.opacity ?? 1,
+      class: appearance.className ?? ''
+    },
+
+    statusBadge: {
+      fill: appearance.color
+    },
+
+    statusIcon: {
+      text: appearance.icon
+    },
+
+    statusLabel: {
+      text: appearance.label,
+      fill: appearance.color
+    }
+  })
+}
+
+const intervalTasks = []
+const intervalTaskExeuctionId = setInterval(() => {
+  intervalTasks.forEach((task) => {
+    task()
+  })
+}, 3500)
+
+async function loadPipelineAndStages() {
+  pipelineLoading.value = true
+
+  try {
+    const [pipelineResult, stagesResult] =
+      await Promise.allSettled([
+        requestPipeline(props.pipelineId),
+        requestPipelineStages(props.pipelineId)
+      ])
+
+    if (
+      pipelineResult.status === 'rejected' ||
+      stagesResult.status === 'rejected'
+    ) {
+      initPipelineAndStagesFailed.value = true
+      ElMessage.error('加载分析流水线信息失败')
+      return
+    }
+
+    initPipelineAndStagesFailed.value = false
+    analysisPipeline.value = pipelineResult.value
+    pipelineStages.value = stagesResult.value
+    initPipelineGraph()
+    intervalTasks.push(updateStages)
+  } catch (error) {
+    console.error(error)
+    initPipelineAndStagesFailed.value = true
+    ElMessage.error('初始化流水线图失败')
+  } finally {
+    pipelineLoading.value = false
+  }
+}
+
+onBeforeUnmount(() => {
+  flowGraph?.dispose()
+  flowGraph = null
+})
 
 const statusMeta = {
   completed: { label: '已完成', icon: 'Check', class: 'completed' },
@@ -18,48 +647,99 @@ const statusMeta = {
   confirm: { label: '需要确认', icon: 'Warning', class: 'confirm' }
 }
 
+
+
+
+
+onMounted(() => {
+  loadPipelineAndStages()
+})
+
+onBeforeUnmount(() => {
+  clearInterval(intervalTaskExeuctionId)
+})
+
 const node = (id) => pipelineNodes.find((item) => item.id === id)
 </script>
 
 <template>
-  <div class="detail-page">
-    <div class="detail-header">
-      <el-button text class="back" @click="emit('back')"
-        ><el-icon><ArrowLeft /></el-icon>返回任务列表</el-button
+  <div class="detail-page" v-loading="pipelineLoading" element-loading-text="正在加载...">
+    <div v-if="initPipelineAndStagesFailed" class="detail-load-error">
+      <el-result
+        icon="error"
+        title="任务详情加载失败"
+        sub-title="暂时无法获取分析流水线信息，请重新尝试"
       >
+        <template #extra>
+          <div class="detail-load-error-actions">
+            <el-button
+              type="primary"
+              :loading="pipelineLoading"
+              @click="loadPipelineAndStages"
+            >
+              重新尝试
+            </el-button>
+            <el-button @click="emit('back')">
+              返回任务列表
+            </el-button>
+          </div>
+        </template>
+      </el-result>
+    </div>
+
+    <template v-else>
+    <div class="detail-header">
+      <el-button text class="back" @click="emit('back')"><el-icon>
+          <ArrowLeft />
+        </el-icon>返回任务列表</el-button>
       <div class="title-row">
         <div>
           <div class="title-line">
-            <h1>{{ task.name }}</h1>
-            <StatusTag :status="task.status" />
+            <h1>{{ analysisPipeline?.analysisPipelineName ?? '--' }}</h1>
+            <!-- <StatusTag :status="task.status" /> -->
           </div>
-          <p>{{ task.id }} · {{ task.project }}</p>
+          <!-- <p>{{ 'task.id' }} · {{ 'task.project' }}</p> -->
         </div>
         <div class="actions">
-          <el-button @click="logVisible = true"
-            ><el-icon><Document /></el-icon>运行日志</el-button
-          ><el-button
-            ><el-icon><Download /></el-icon>下载结果</el-button
-          ><el-button type="primary"
-            ><el-icon><DocumentChecked /></el-icon>查看报告</el-button
-          >
+          <template>
+            <el-button @click="logVisible = true">
+              <el-icon>
+                <Document />
+              </el-icon>
+              运行日志
+            </el-button>
+
+            <el-button>
+              <el-icon>
+                <Download />
+              </el-icon>
+              下载结果
+            </el-button>
+
+            <el-button type="primary">
+              <el-icon>
+                <DocumentChecked />
+              </el-icon>
+              查看报告
+            </el-button>
+          </template>
         </div>
       </div>
       <div class="summary-strip">
         <div>
-          <span>分析类型</span><strong>{{ task.type }}</strong>
+          <span>分析类型</span><strong>{{ 'task.type' }}</strong>
         </div>
         <div>
-          <span>样本编号</span><strong>{{ task.sample }}</strong>
+          <span>任务名称</span><strong>{{ 'task.sample' }}</strong>
         </div>
         <div>
-          <span>输入数据</span><strong>{{ task.input }}</strong>
+          <span>输入数据</span><strong>{{ 'task.input' }}</strong>
         </div>
         <div>
-          <span>创建时间</span><strong>{{ task.createdAt }}</strong>
+          <span>创建时间</span><strong>{{ 'task.createdAt' }}</strong>
         </div>
         <div>
-          <span>运行时长</span><strong>{{ task.duration }}</strong>
+          <span>运行时长</span><strong>{{ 'task.duration' }}</strong>
         </div>
       </div>
     </div>
@@ -68,20 +748,18 @@ const node = (id) => pipelineNodes.find((item) => item.id === id)
       <el-tab-pane label="分析流水线" name="pipeline">
         <div class="pipeline-layout">
           <el-card shadow="never" class="pipeline-card">
-            <template #header
-              ><div class="panel-header">
+            <template #header>
+              <div class="panel-header">
                 <div>
-                  <strong>细菌全基因组分析流程</strong
-                  ><small>节点状态实时更新 · 当前总体进度 {{ task.progress }}%</small>
+                  <strong>细菌全基因组分析流程</strong><small>节点状态实时更新 · 当前总体进度 {{ 'task.progress' }}%</small>
                 </div>
                 <div class="legend">
-                  <span><i class="done"></i>已完成</span><span><i class="run"></i>运行中</span
-                  ><span><i></i>等待中</span>
+                  <span><i class="done"></i>已完成</span><span><i class="run"></i>运行中</span><span><i></i>等待中</span>
                 </div>
-              </div></template
-            >
-            <div class="pipeline-canvas">
-              <div class="flow-row main-flow">
+              </div>
+            </template>
+            <div class="pipeline-canvas" ref="flowGraphContainer">
+              <!-- <div class="flow-row main-flow">
                 <button
                   v-for="id in ['preprocess', 'qc', 'assembly', 'species']"
                   :key="id"
@@ -151,110 +829,93 @@ const node = (id) => pipelineNodes.find((item) => item.id === id)
                     ><el-icon><Document /></el-icon></span
                   ><span class="node-text"><strong>报告生成</strong><small>等待中</small></span>
                 </button>
-              </div>
+              </div> -->
             </div>
           </el-card>
 
           <el-card shadow="never" class="node-detail">
-            <template #header
-              ><div class="node-heading">
-                <span :class="['big-status', statusMeta[selectedNode.status].class]"
-                  ><el-icon><component :is="statusMeta[selectedNode.status].icon" /></el-icon
-                ></span>
+            <template #header>
+              <div class="node-heading">
+                <span :class="['big-status', statusMeta[selectedNode.status].class]"><el-icon>
+                    <component :is="statusMeta[selectedNode.status].icon" />
+                  </el-icon></span>
                 <div>
-                  <strong>{{ selectedNode.name }}</strong
-                  ><small>{{ statusMeta[selectedNode.status].label }}</small>
+                  <strong>{{ selectedNode.name }}</strong><small>{{ 'statusMeta[selectedNode.status].label' }}</small>
                 </div>
-              </div></template
-            >
+              </div>
+            </template>
             <div class="node-body">
               <div class="detail-pair">
-                <span>执行状态</span><strong>{{ statusMeta[selectedNode.status].label }}</strong>
+                <span>执行状态</span><strong>{{ 'statusMeta[selectedNode.status].label' }}</strong>
               </div>
               <div class="detail-pair">
-                <span>运行耗时</span><strong>{{ selectedNode.duration }}</strong>
+                <span>运行耗时</span><strong>{{ 'selectedNode.duration' }}</strong>
               </div>
               <el-divider />
               <h3>阶段摘要</h3>
-              <p>{{ selectedNode.summary }}</p>
+              <p>{{ 'selectedNode.summary' }}</p>
               <h3>输出文件</h3>
               <div class="output-file">
-                <el-icon><Document /></el-icon><span>{{ selectedNode.output }}</span
-                ><el-button v-if="selectedNode.output !== '--'" link type="primary"
-                  ><el-icon><Download /></el-icon
-                ></el-button>
+                <el-icon>
+                  <Document />
+                </el-icon><span>{{ 'selectedNode.output' }}</span><el-button v-if="true" link type="primary"><el-icon>
+                    <Download />
+                  </el-icon></el-button>
               </div>
-              <el-button class="full-button" @click="logVisible = true"
-                ><el-icon><Document /></el-icon>查看阶段日志</el-button
-              >
+              <el-button class="full-button" @click="logVisible = true"><el-icon>
+                  <Document />
+                </el-icon>查看阶段日志</el-button>
             </div>
           </el-card>
         </div>
-        <el-card shadow="never" class="run-info"
-          ><div class="run-status">
+        <!-- <el-card shadow="never" class="run-info">
+          <div class="run-status">
             <span class="pulse"></span>
             <div>
-              <strong>正在执行：物种鉴定</strong
-              ><small>正在使用 Kraken2 进行分类初筛，完成后将进入 ANI 物种确认。</small>
+              <strong>正在执行：物种鉴定</strong><small>正在使用 Kraken2 进行分类初筛，完成后将进入 ANI 物种确认。</small>
             </div>
           </div>
           <div class="run-progress">
-            <span>预计剩余 4 分钟</span><el-progress :percentage="68" :stroke-width="7" /></div
-        ></el-card>
+            <span>预计剩余 4 分钟</span><el-progress :percentage="68" :stroke-width="7" />
+          </div>
+        </el-card> -->
       </el-tab-pane>
 
-      <el-tab-pane label="样本信息" name="sample"
-        ><el-card shadow="never"
-          ><el-descriptions :column="3" border
-            ><el-descriptions-item label="样本编号">{{ task.sample }}</el-descriptions-item
-            ><el-descriptions-item label="任务编号">{{ task.id }}</el-descriptions-item
-            ><el-descriptions-item label="所属项目">{{ task.project }}</el-descriptions-item
-            ><el-descriptions-item label="数据类型">{{ task.input }}</el-descriptions-item
-            ><el-descriptions-item label="分析流程">{{ task.type }}</el-descriptions-item
-            ><el-descriptions-item label="创建人">张老师</el-descriptions-item></el-descriptions
-          ></el-card
-        ></el-tab-pane
-      >
-      <el-tab-pane label="结果文件" name="files"
-        ><el-card shadow="never"
-          ><el-table :data="resultFiles"
-            ><el-table-column prop="name" label="文件名" min-width="240" /><el-table-column
-              prop="stage"
-              label="分析阶段"
-            /><el-table-column prop="type" label="格式" /><el-table-column
-              prop="size"
-              label="大小"
-            /><el-table-column prop="updatedAt" label="生成时间" /><el-table-column label="操作"
-              ><template #default
-                ><el-button link type="primary">下载</el-button></template
-              ></el-table-column
-            ></el-table
-          ></el-card
-        ></el-tab-pane
-      >
-      <el-tab-pane label="确认记录" name="records"
-        ><el-empty description="暂无用户确认记录"
-      /></el-tab-pane>
+      <el-tab-pane label="样本信息" name="sample"><el-card shadow="never"><el-descriptions :column="3"
+            border><el-descriptions-item label="样本编号">{{ 'task.sample' }}</el-descriptions-item><el-descriptions-item
+              label="任务编号">{{ 'task.id' }}</el-descriptions-item><el-descriptions-item label="所属项目">{{ 'task.project'
+              }}</el-descriptions-item><el-descriptions-item label="数据类型">{{ 'task.input'
+              }}</el-descriptions-item><el-descriptions-item label="分析流程">{{ 'task.type'
+              }}</el-descriptions-item><el-descriptions-item
+              label="创建人">张老师</el-descriptions-item></el-descriptions></el-card></el-tab-pane>
+      <el-tab-pane label="结果文件" name="files"><el-card shadow="never"><el-table :data="resultFiles"><el-table-column
+              prop="name" label="文件名" min-width="240" /><el-table-column prop="stage" label="分析阶段" /><el-table-column
+              prop="type" label="格式" /><el-table-column prop="size" label="大小" /><el-table-column prop="updatedAt"
+              label="生成时间" /><el-table-column label="操作"><template #default><el-button link
+                  type="primary">下载</el-button></template></el-table-column></el-table></el-card></el-tab-pane>
+      <el-tab-pane label="确认记录" name="records"><el-empty description="暂无用户确认记录" /></el-tab-pane>
+
+
     </el-tabs>
 
-    <el-drawer v-model="logVisible" title="运行日志" size="560px"
-      ><div class="log-toolbar">
-        <el-tag type="success">实时更新</el-tag
-        ><el-button text
-          ><el-icon><Download /></el-icon>下载完整日志</el-button
-        >
+    <!-- <el-drawer v-model="logVisible" title="运行日志" size="560px">
+      <div class="log-toolbar">
+        <el-tag type="success">实时更新</el-tag><el-button text><el-icon>
+            <Download />
+          </el-icon>下载完整日志</el-button>
       </div>
       <pre class="log-output">
-[14:32:06] INFO  Task TASK-0721-008 started
-[14:32:08] INFO  Input pair validation passed
-[14:34:24] INFO  Preprocess completed successfully
-[14:43:06] INFO  Quality control completed · Q30=94.7%
-[14:54:11] INFO  Assembly completed · N50=186420
-[14:54:18] INFO  Starting Kraken2 classification
-[14:55:42] INFO  Loading database taxonomy...
-[14:56:03] INFO  Processing contigs.fasta
-_</pre>
-    </el-drawer>
+    [14:32:06] INFO Task TASK-0721-008 started
+    [14:32:08] INFO Input pair validation passed
+    [14:34:24] INFO Preprocess completed successfully
+    [14:43:06] INFO Quality control completed · Q30=94.7%
+    [14:54:11] INFO Assembly completed · N50=186420
+    [14:54:18] INFO Starting Kraken2 classification
+    [14:55:42] INFO Loading database taxonomy...
+    [14:56:03] INFO Processing contigs.fasta
+    _</pre>
+    </el-drawer> -->
+    </template>
   </div>
 </template>
 
@@ -263,38 +924,59 @@ _</pre>
   max-width: 1280px;
   margin: 0 auto;
 }
+
+.detail-load-error {
+  min-height: calc(100vh - 150px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.detail-load-error-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
 .detail-header {
   margin-bottom: 7px;
 }
+
 .back {
   margin: -8px 0 9px -12px;
   color: #71817e;
 }
+
 .title-row {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
 }
+
 .title-line {
   display: flex;
   align-items: center;
   gap: 11px;
 }
+
 .title-line h1 {
   margin: 0;
   color: #1f302e;
   font-size: 23px;
   font-weight: 700;
 }
+
 .title-row p {
   margin: 4px 0 0;
   color: #899693;
   font-size: 12px;
 }
+
 .actions {
   display: flex;
   gap: 8px;
 }
+
 .summary-strip {
   display: grid;
   grid-template-columns: 1.2fr 1fr 1fr 1fr 1fr;
@@ -304,76 +986,94 @@ _</pre>
   border-radius: 10px;
   background: #fff;
 }
-.summary-strip > div {
+
+.summary-strip>div {
   display: grid;
   gap: 3px;
   padding: 0 16px;
   border-right: 1px solid #e8edec;
 }
-.summary-strip > div:first-child {
+
+.summary-strip>div:first-child {
   padding-left: 0;
 }
-.summary-strip > div:last-child {
+
+.summary-strip>div:last-child {
   border: 0;
 }
+
 .summary-strip span {
   color: #8b9895;
   font-size: 10px;
 }
+
 .summary-strip strong {
   color: #394947;
   font-size: 12px;
   font-weight: 600;
 }
+
 .detail-tabs :deep(.el-tabs__header) {
   margin-bottom: 16px;
 }
+
 .pipeline-layout {
   display: grid;
   grid-template-columns: minmax(680px, 1fr) 270px;
   gap: 16px;
 }
+
 .panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
-.panel-header > div:first-child {
+
+.panel-header>div:first-child {
   display: grid;
 }
+
 .panel-header strong {
   font-weight: 650;
 }
+
 .panel-header small {
   color: #8c9896;
   font-size: 10px;
 }
+
 .legend {
   display: flex;
   gap: 13px;
   color: #85928f;
   font-size: 10px;
 }
+
 .legend span {
   display: flex;
   align-items: center;
   gap: 4px;
 }
+
 .legend i {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: #b3bfbd;
 }
+
 .legend .done {
   background: #47a16a;
 }
+
 .legend .run {
   background: #2b8e7d;
 }
+
 .pipeline-card :deep(.el-card__body) {
   padding: 14px;
 }
+
 .pipeline-canvas {
   position: relative;
   min-height: 410px;
@@ -384,6 +1084,7 @@ _</pre>
   border-radius: 8px;
   overflow: auto;
 }
+
 .flow-row {
   position: relative;
   z-index: 2;
@@ -391,9 +1092,11 @@ _</pre>
   align-items: center;
   gap: 34px;
 }
+
 .main-flow {
   justify-content: center;
 }
+
 .main-flow .node:not(:last-child)::after,
 .branch-flow .node:not(:last-child)::after {
   content: '';
@@ -404,6 +1107,7 @@ _</pre>
   height: 1px;
   background: #cbd6d4;
 }
+
 .main-flow .node:not(:last-child)::before,
 .branch-flow .node:not(:last-child)::before {
   content: '';
@@ -416,6 +1120,7 @@ _</pre>
   border-right: 1px solid #aebdba;
   transform: rotate(45deg);
 }
+
 .node {
   position: relative;
   width: 135px;
@@ -430,11 +1135,13 @@ _</pre>
   cursor: pointer;
   box-shadow: 0 3px 8px rgba(46, 72, 68, 0.04);
 }
+
 .node:hover,
 .node.selected {
   border-color: #54a698;
   box-shadow: 0 0 0 2px rgba(22, 124, 107, 0.1);
 }
+
 .node-icon {
   width: 29px;
   height: 29px;
@@ -445,70 +1152,86 @@ _</pre>
   background: #eff3f2;
   color: #879592;
 }
+
 .node-text {
   display: grid;
 }
+
 .node-text strong {
   font-size: 11px;
   font-weight: 650;
   color: #3a4947;
 }
+
 .node-text small {
   font-size: 9px;
   color: #919e9b;
 }
+
 .node.completed .node-icon {
   color: #fff;
   background: #49a46e;
 }
+
 .node.running .node-icon {
   color: #fff;
   background: #218e7c;
 }
+
 .node.running {
   border-color: #58a99b;
   background: #f2faf8;
 }
+
 .node.running .node-icon :deep(svg) {
   animation: spin 1.2s linear infinite;
 }
+
 .branch-line {
   position: absolute;
   z-index: 1;
   border-left: 1px solid #cbd6d4;
   border-bottom: 1px solid #cbd6d4;
 }
+
 .branch-line.one {
   top: 81px;
   left: 52%;
   width: 190px;
   height: 94px;
 }
+
 .branch-line.two {
   top: 81px;
   left: 52%;
   width: 115px;
   height: 207px;
 }
+
 .branch-flow {
   margin-top: 71px;
   justify-content: flex-end;
   padding-right: 38px;
 }
+
 .branch-flow.second {
   margin-top: 72px;
 }
+
 .branch-flow.second .node:last-child {
   margin-left: 64px;
 }
+
 .node-detail :deep(.el-card__header) {
   padding: 16px;
 }
+
 .node-heading {
   display: flex;
   align-items: center;
   gap: 10px;
 }
+
 .big-status {
   width: 34px;
   height: 34px;
@@ -518,29 +1241,37 @@ _</pre>
   color: #fff;
   background: #9ca9a7;
 }
+
 .big-status.completed {
   background: #49a46e;
 }
+
 .big-status.running {
   background: #218e7c;
 }
-.node-heading > div {
+
+.node-heading>div {
   display: grid;
 }
+
 .node-heading strong {
   font-size: 14px;
   font-weight: 650;
 }
+
 .node-heading small {
   color: #2a8e7d;
   font-size: 10px;
 }
+
 .node-detail :deep(.el-card__body) {
   padding: 0;
 }
+
 .node-body {
   padding: 17px;
 }
+
 .detail-pair {
   display: flex;
   justify-content: space-between;
@@ -548,16 +1279,19 @@ _</pre>
   color: #83918e;
   font-size: 11px;
 }
+
 .detail-pair strong {
   color: #3b4b48;
   font-weight: 600;
 }
+
 .node-body h3 {
   margin: 15px 0 7px;
   color: #465552;
   font-size: 11px;
   font-weight: 650;
 }
+
 .node-body p {
   margin: 0;
   padding: 10px;
@@ -567,6 +1301,7 @@ _</pre>
   font-size: 11px;
   line-height: 1.5;
 }
+
 .output-file {
   display: flex;
   align-items: center;
@@ -577,29 +1312,35 @@ _</pre>
   color: #60706d;
   font-size: 10px;
 }
+
 .output-file span {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
 .full-button {
   width: 100%;
   margin-top: 18px;
 }
+
 .run-info {
   margin-top: 15px;
 }
+
 .run-info :deep(.el-card__body) {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 14px 18px;
 }
+
 .run-status {
   display: flex;
   align-items: center;
   gap: 11px;
 }
+
 .pulse {
   width: 9px;
   height: 9px;
@@ -607,27 +1348,33 @@ _</pre>
   background: #208e7c;
   box-shadow: 0 0 0 5px #dff0ed;
 }
-.run-status > div {
+
+.run-status>div {
   display: grid;
 }
+
 .run-status strong {
   font-size: 12px;
   font-weight: 650;
 }
+
 .run-status small {
   color: #83918e;
   font-size: 10px;
 }
+
 .run-progress {
   width: 280px;
   color: #83918e;
   font-size: 10px;
 }
+
 .log-toolbar {
   display: flex;
   justify-content: space-between;
   margin-bottom: 12px;
 }
+
 .log-output {
   min-height: 560px;
   margin: 0;
@@ -640,18 +1387,22 @@ _</pre>
     monospace;
   white-space: pre-wrap;
 }
+
 .detail-tabs :deep(.el-empty) {
   padding-top: 100px;
 }
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
   }
 }
+
 @media (max-width: 1200px) {
   .pipeline-layout {
     grid-template-columns: 1fr;
   }
+
   .node-detail {
     display: none;
   }

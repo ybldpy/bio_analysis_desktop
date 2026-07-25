@@ -6,7 +6,7 @@ import {
   canUseBatchPrefix,
   fetchReferenceGenomeList,
   ReferenceGenome
-} from '../../api/analysisTaskBuild'
+} from '../../api/analysisPipeline'
 import {
   fetchProjectList,
   BioProject
@@ -170,7 +170,8 @@ function createTask(source = {}, name): UserCreateAnalysisTask {
     inputSlots: [{
       r1: [],
       r2: [],
-      assembly: []
+      assembly: [],
+      type: 0
     }],
     type: 0
   }
@@ -428,15 +429,15 @@ function doCheckForBuildJobBeforeConfirmation() {
 
   const notSatisfiedTaskList =
     analysisTasksBuildJob.tasks.filter((task) => {
-      switch (task.type) {
+      switch (task.inputSlots[0].type) {
         case 0:
-          return task.r1.length < 1 || task.r2.length < 1
+          return task.inputSlots[0].r1.length < 1 || task.inputSlots[0].r2.length < 1
 
         case 1:
-          return task.r1.length < 1
+          return task.inputSlots[0].r1.length < 1
 
         case 2:
-          return task.assembly.length < 1
+          return task.inputSlots[0].assembly.length < 1
 
         default:
           return true
@@ -971,7 +972,7 @@ function selectSpeceficType(speceficTypeId) {
             <div class="subsection-title">
               <strong>测序数据</strong><span>为当前任务选择数据类型并上传文件</span>
             </div>
-            <el-radio-group v-model="activeTask.type" class="data-type">
+            <el-radio-group v-model="activeTask.inputSlots[0].type" class="data-type">
               <el-radio-button :value='0'>双端测序 FASTQ</el-radio-button>
               <el-radio-button :value='1'>单端测序 FASTQ</el-radio-button>
               <el-radio-button :value='2'>已组装 Contigs</el-radio-button>
@@ -1018,7 +1019,7 @@ function selectSpeceficType(speceficTypeId) {
                 <div class="upload-tip">拖拽文件到此处，或点击选择文件</div>
               </el-upload>
             </div>
-            <el-alert v-if="activeTask.type === 2 && pipelineTypeSelection.typeId === analysisTypes.virus.id" title="使用已组装数据时，系统将只使用参考基因组进行序列比较" type="info"
+            <el-alert v-if="activeTask.inputSlots[0].type === 2 && pipelineTypeSelection.typeId === analysisTypes.virus.id" title="使用已组装数据时，系统将只使用参考基因组进行序列比较" type="info"
               :closable="false" show-icon />
           </section>
         </div>

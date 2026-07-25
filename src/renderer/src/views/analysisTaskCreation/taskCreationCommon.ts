@@ -1,4 +1,4 @@
-import type { ReferenceGenome } from '../../api/analysisTaskBuild'
+import { analysisPipelineTypeCodes, type ReferenceGenome } from '../../api/analysisTaskBuild'
 import type { BioProject } from '../../api/bioProject'
 
 export type AnalysisTaskDataType = 0 | 1 | 2
@@ -23,6 +23,17 @@ export interface TaskCreation {
   customerReferenceGenome: File | null
   analysisType: number
   tasks: AnalysisTask[]
+}
+
+export function getAnalysisPipelineTypeName(analysisTypeCode:number) {
+  const codeNameMap = {
+    100: '常规病毒分析',
+    101: '新冠病毒分析',
+    200: '常规细菌分析',
+    401: '宏基因组鸟枪法测序',
+    400: '16S 扩增子测序'
+  }
+  return codeNameMap[analysisTypeCode]
 }
 
 export type TaskUploadRequest = TaskCreation

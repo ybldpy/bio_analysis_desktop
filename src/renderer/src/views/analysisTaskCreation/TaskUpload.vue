@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import {
     requestBuildAnalysisTasks,
     type CreatedAnalysisTask
-} from '../../api/analysisTaskBuild'
+} from '../../api/analysisPipeline'
 import {
     AnalysisTaskUploadFileRequest,
     SEQUENCE_LEVEL_ASSEMBLY,
@@ -12,8 +12,9 @@ import {
     doUploadAnalysisTaskInput,
     uploadAnalysisTaskInputResonseCode,
     type AnalysisTaskUploadFiles
-} from '../../api/analysisTaskUpload'
+} from '../../api/analysisPipeline'
 import {
+    getAnalysisPipelineTypeName,
     takeTaskUploadRequest,
     type AnalysisTask,
     type AnalysisTaskDataType
@@ -179,12 +180,11 @@ function getStatusType(
     return types[status]
 }
 
-function getFileSummary(task: AnalysisTask): string {
+function getFileSummary(task: TaskUploadItem): string {
     const fileNames = [
-        task.r1?.name,
-        task.r2?.name,
-        task.contigs?.name,
-        task.customerReferenceGenome?.name
+        task.inputSlots[0].r1?.file?.name,
+        task.inputSlots[0].r2?.file?.name,
+        task.inputSlots[0].assembly?.file?.name,
     ].filter((name): name is string => Boolean(name))
 
     return fileNames.join('、') || '--'
@@ -224,7 +224,7 @@ async function createTasks(): Promise<boolean> {
             taskUploadRequest.tasks,
             taskUploadRequest.project.projectId,
             taskUploadRequest.analysisType,
-            taskUploadRequest.referenceGenome?.taxId ?? null
+            taskUploadRequest.referenceGenome?.refId ?? null
         )
 
         if (!response.success) {
@@ -485,6 +485,20 @@ onMounted(() => {
         startUploadWorkflow()
     }
 })
+
+
+const taskListView = computed(() => {
+
+    const viewTaskList = tasks.filter((task) => {
+        return task.status === 'failed'
+    })
+
+    const normalTaskList = tasks.filter((task) => {return task.status !== 'failed'})
+    viewTaskList.push(...normalTaskList)
+    return viewTaskList
+
+})
+
 </script>
 
 <template>
@@ -502,11 +516,11 @@ onMounted(() => {
         <template v-else>
             <header class="page-heading">
                 <div>
-                    <span class="eyebrow">TASK UPLOAD</span>
-                    <h1>创建任务并上传测序数据</h1>
-                    <p>
+                    <!-- <span class="eyebrow">TASK UPLOAD</span> -->
+                    <h1>任务创建并上传测序数据</h1>
+                    <!-- <p>
                         系统将先批量创建 {{ tasks.length }} 个任务，再依次上传每个任务的数据文件。
-                    </p>
+                    </p> -->
                 </div>
 
                 <el-tag v-if="isWorking" type="warning" effect="light" round>
@@ -536,14 +550,14 @@ onMounted(() => {
                     <el-descriptions-item label="所属项目">
                         {{ project?.projectName ?? '--' }}
                     </el-descriptions-item>
-                    <el-descriptions-item label="分析类型代码">
-                        {{ taskUploadRequest?.analysisType ?? '--' }}
+                    <el-descriptions-item label="分析类型">
+                        {{ getAnalysisPipelineTypeName(taskUploadRequest.analysisType) }}
                     </el-descriptions-item>
                     <el-descriptions-item label="参考基因组">
                         {{
                             referenceGenome
                                 ? `${referenceGenome.speciesName} · Tax ID ${referenceGenome.taxId}`
-                                : '无需参考基因组'
+                                : '--'
                         }}
                     </el-descriptions-item>
                 </el-descriptions>
@@ -571,22 +585,22 @@ onMounted(() => {
                     </div>
                 </template>
 
-                <el-table :data="tasks" :row-key="getTaskRowKey">
+                <el-table :data="taskListView" :row-key="getTaskRowKey">
                     <el-table-column type="index" label="#" width="56" align="center" />
                     <el-table-column label="任务名称" min-width="170">
                         <template #default="{ row }">
-                            {{ row.sourceTask.name }}
+                            {{ row.taskName }}
                         </template>
                     </el-table-column>
                     <el-table-column label="数据类型" width="130">
                         <template #default="{ row }">
-                            {{ getDataTypeLabel(row.sourceTask.type) }}
+                            {{ getDataTypeLabel(row.inputSlots[0].type) }}
                         </template>
                     </el-table-column>
                     <el-table-column label="文件" min-width="260">
                         <template #default="{ row }">
                             <span class="file-summary">
-                                {{ getFileSummary(row.sourceTask) }}
+                                {{ getFileSummary(row) }}
                             </span>
                         </template>
                     </el-table-column>
@@ -614,8 +628,7 @@ onMounted(() => {
                         <template #default="{ row }">
                             <el-button v-if="
                                 phase === 'completed' &&
-                                row.status === 'failed' &&
-                                row.createdTask
+                                row.status === 'failed'
                             " link type="primary" @click="retryTask(row)">
                                 重试
                             </el-button>

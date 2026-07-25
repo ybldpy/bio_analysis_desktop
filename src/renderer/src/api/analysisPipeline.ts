@@ -1,0 +1,638 @@
+import type {
+    AnalysisPipeline,
+    AnalysisPipelineStage
+} from '../common/types/analysisPipeline'
+
+export const analysisPipelineStageStatus = {
+    pending: 0,
+    queuing: 1,
+    running: 2,
+    failed: 3,
+    completed: 4,
+    actionRequired: 5,
+    notApplicable: 6
+} as const
+
+
+
+export const pipelineTypeCode = {
+  regularVirus: 100,
+  covid19: 101,
+  bacteria: 200
+} as const
+
+
+export const pipelineStageTypeCode = {
+  qc: 0,
+  taxonomy: 10,
+  mapping: 20,
+  mappingNoRefseq: 21,
+  assembly: 30,
+  assemblyPolish: 31,
+  variantCall: 40,
+  consensus: 41,
+  depthCoverage: 42,
+  referenceComparison: 43,
+  amr: 60,
+  virulence: 61,
+  mlst: 62,
+  cgmlst: 63,
+  serotype: 64,
+  snpSingle: 70,
+  snpCore: 71,
+  snpAnnotation: 72,
+  snpMergeResult: 73,
+  readInspect: 80,
+  metagenomicsAmplicon16S: 90,
+  metagenomicsShotgun: 91
+} as const
+
+
+interface AnalysisPipelineStageDTO {
+    stageId: number
+    stageName: string
+    status: number
+    startTime: string | null
+    stageType: number
+    outputUrl: Record<string, string>
+    outputInline: Record<string, unknown>
+}
+
+interface AnalysisPipelineDTO {
+    pipelineId: number
+    pipelineType: number
+    status: number
+    analysisPipelineName: string
+    createTime: string
+    projectId: number
+}
+
+const mockAnalysisPipelineStages: AnalysisPipelineStageDTO[] = [
+    {
+        stageId: 1,
+        stageName: '数据预处理',
+        status: analysisPipelineStageStatus.completed,
+        startTime: '2026-07-25T09:00:00+08:00',
+        stageType: 100,
+        outputUrl: {
+            cleanManifest: '/mock/pipelines/1/preprocess/clean_manifest.json'
+        },
+        outputInline: {
+            inputFileCount: 2,
+            paired: true
+        }
+    },
+    {
+        stageId: 2,
+        stageName: '数据质控',
+        status: analysisPipelineStageStatus.completed,
+        startTime: '2026-07-25T09:02:18+08:00',
+        stageType: 101,
+        outputUrl: {
+            report: '/mock/pipelines/1/qc/fastp_report.html'
+        },
+        outputInline: {
+            q30: 94.7,
+            cleanReads: 6824310
+        }
+    },
+    {
+        stageId: 3,
+        stageName: '基因组组装',
+        status: analysisPipelineStageStatus.completed,
+        startTime: '2026-07-25T09:11:00+08:00',
+        stageType: 102,
+        outputUrl: {
+            contigs: '/mock/pipelines/1/assembly/contigs.fasta'
+        },
+        outputInline: {
+            totalLength: 5120000,
+            n50: 186420
+        }
+    },
+    {
+        stageId: 4,
+        stageName: '物种鉴定',
+        status: analysisPipelineStageStatus.running,
+        startTime: '2026-07-25T09:22:05+08:00',
+        stageType: 103,
+        outputUrl: {},
+        outputInline: {
+            progress: 68
+        }
+    },
+    {
+        stageId: 5,
+        stageName: '耐药基因分析',
+        status: analysisPipelineStageStatus.pending,
+        startTime: null,
+        stageType: 104,
+        outputUrl: {},
+        outputInline: {}
+    },
+    {
+        stageId: 6,
+        stageName: '报告生成',
+        status: analysisPipelineStageStatus.pending,
+        startTime: null,
+        stageType: 105,
+        outputUrl: {},
+        outputInline: {}
+    }
+]
+
+async function doRequestPipelineStages(
+    pipelineId: number
+): Promise<AnalysisPipelineStageDTO[]> {
+    await new Promise<void>((resolve) => {
+        setTimeout(resolve, 300 + Math.random() * 500)
+    })
+
+    if (!Number.isInteger(pipelineId) || pipelineId <= 0) {
+        throw new Error('无效的分析流水线 ID')
+    }
+
+    return mockAnalysisPipelineStages
+}
+
+function convertPipelineStageDTO(
+    dto: AnalysisPipelineStageDTO
+): AnalysisPipelineStage {
+    return {
+        stageId: dto.stageId,
+        stageName: dto.stageName,
+        status: dto.status,
+        startTime: dto.startTime
+            ? new Date(dto.startTime)
+            : null,
+        stageType: dto.stageType,
+        output: {
+            urls: { ...dto.outputUrl },
+            inline: { ...dto.outputInline }
+        }
+    }
+}
+
+async function doRequestPipeline(
+    pipelineId: number
+): Promise<AnalysisPipelineDTO> {
+    await new Promise<void>((resolve) => {
+        setTimeout(resolve, 300 + Math.random() * 500)
+    })
+
+    if (!Number.isInteger(pipelineId) || pipelineId <= 0) {
+        throw new Error('无效的分析流水线 ID')
+    }
+
+    return {
+        pipelineId,
+        pipelineType: 200,
+        status: analysisPipelineStageStatus.running,
+        analysisPipelineName: `细菌全基因组分析-${pipelineId}`,
+        createTime: '2026-07-25T09:00:00+08:00',
+        projectId: 1
+    }
+}
+
+function convertPipelineDTO(
+    dto: AnalysisPipelineDTO
+): AnalysisPipeline {
+    return {
+        pipelineId: dto.pipelineId,
+        pipelineType: dto.pipelineType,
+        status: dto.status,
+        analysisPipelineName: dto.analysisPipelineName,
+        createTime: new Date(dto.createTime),
+        projectId: dto.projectId
+    }
+}
+
+
+export async function requestPipelineStages(
+    pipelineId: number
+): Promise<AnalysisPipelineStage[]> {
+    const stageDTOList =
+        await doRequestPipelineStages(pipelineId)
+
+    return stageDTOList.map(convertPipelineStageDTO)
+}
+
+
+export async function requestPipeline(
+    pipelineId: number
+): Promise<AnalysisPipeline> {
+    const pipelineDTO = await doRequestPipeline(pipelineId)
+    return convertPipelineDTO(pipelineDTO)
+}
+
+
+
+
+const AnalysisTaskMockMode = Object.freeze({
+  SUCCESS: 'success',
+  BUSINESS_ERROR: 'business-error',
+  NETWORK_ERROR: 'network-error',
+  SERVER_ERROR: 'server-error',
+  RANDOM: 'random'
+})
+
+const analysisTaskMockProbabilities = Object.freeze({
+  success: 0.6,
+  businessError: 0.2,
+  networkError: 0.1,
+  serverError: 0.1
+})
+
+
+export type AnalysisPipelineType = 100 | 101 | 200 | 400 | 401
+export const analysisPipelineTypeCodes = Object.freeze({
+  regularVirus: 100,
+  virusCovid: 101,
+  regularBacteria: 200,
+  metagenomeAmplicon16: 400,
+  metagenomeShotgun: 401
+})
+
+
+export interface ReferenceGenomeMeta {
+  genomeLength: string
+  version: string
+}
+
+export interface ReferenceGenome {
+  refId: number
+  speciesName: string
+  sourceDB: string
+  taxId: number
+  meta: ReferenceGenomeMeta
+  accessions: string[]
+  isSegment: boolean
+}
+
+export interface FetchReferenceGenomeResult {
+  referenceGenomes: ReferenceGenome[]
+  totalRecords: number
+}
+
+interface MockReferenceGenomeSpecies {
+  name: string
+  taxId: number
+  genomeLength: number
+}
+
+
+let currentMockMode: TaskUploadMockMode = 'random'
+
+/**
+ * 切换批量创建任务的模拟结果，便于稳定测试指定状态。
+ */
+export function setAnalysisTaskMockMode(mode) {
+  if (!Object.values(AnalysisTaskMockMode).includes(mode)) {
+    throw new Error(`不支持的任务模拟模式：${mode}`)
+  }
+
+  currentMockMode = mode
+}
+
+const mockReferenceGenomeSpecies: MockReferenceGenomeSpecies[] = [
+  { name: 'Escherichia coli', taxId: 562, genomeLength: 4.64 },
+  { name: 'Staphylococcus aureus', taxId: 1280, genomeLength: 2.82 },
+  { name: 'Klebsiella pneumoniae', taxId: 573, genomeLength: 5.39 },
+  { name: 'Pseudomonas aeruginosa', taxId: 287, genomeLength: 6.26 },
+  { name: 'Acinetobacter baumannii', taxId: 470, genomeLength: 3.98 },
+  { name: 'Salmonella enterica', taxId: 28901, genomeLength: 4.82 },
+  { name: 'Listeria monocytogenes', taxId: 1639, genomeLength: 2.94 },
+  { name: 'Bacillus subtilis', taxId: 1423, genomeLength: 4.22 },
+  { name: 'Enterococcus faecium', taxId: 1352, genomeLength: 2.81 },
+  { name: 'Vibrio cholerae', taxId: 666, genomeLength: 4.03 },
+  { name: 'Mycobacterium tuberculosis', taxId: 1773, genomeLength: 4.41 },
+  { name: 'Campylobacter jejuni', taxId: 197, genomeLength: 1.64 }
+]
+
+
+const mockReferenceGenomes: ReferenceGenome[] = mockReferenceGenomeSpecies.flatMap((species, speciesIndex) =>
+  Array.from({ length: 5 }, (_, strainIndex) => {
+    const index = speciesIndex * 5 + strainIndex + 1
+
+    return {
+      refId: index,
+      speciesName: `${species.name} strain MOCK-${strainIndex + 1}`,
+      sourceDB: 'NCBI RefSeq',
+      taxId: species.taxId,
+      meta: {
+        genomeLength: `${(species.genomeLength + strainIndex * 0.03).toFixed(2)} Mb`,
+        version: `v${strainIndex + 1}`
+      },
+      accessions: [
+        `GCF_${String(900000000 + index).padStart(9, '0')}.${strainIndex + 1}`
+      ],
+      isSegment: false
+    }
+  })
+)
+
+export async function fetchReferenceGenomeList(
+  query: string,
+  start: number,
+  size: number
+): Promise<FetchReferenceGenomeResult> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, 500)
+  })
+
+  const normalizedQuery = String(query ?? '').trim().toLowerCase()
+  const normalizedStart = Math.max(0, Number(start) || 0)
+  const normalizedSize = Math.max(1, Number(size) || 20)
+
+  const filteredReferenceGenomes = normalizedQuery
+    ? mockReferenceGenomes.filter((referenceGenome) =>
+        [
+          referenceGenome.refId,
+          referenceGenome.speciesName,
+          referenceGenome.taxId,
+          referenceGenome.sourceDB,
+          ...referenceGenome.accessions
+        ].some((field) => String(field).toLowerCase().includes(normalizedQuery))
+      )
+    : mockReferenceGenomes
+
+  return {
+    referenceGenomes: filteredReferenceGenomes.slice(
+      normalizedStart,
+      normalizedStart + normalizedSize
+    ),
+    totalRecords: filteredReferenceGenomes.length
+  }
+}
+
+
+
+
+export async function canUseBatchPrefix(prefix, projectId) {
+  // TODO: replace with backend API.
+  const forbiddenPrefixesByProject = {
+    default: ['teapot', 'test1', 'test2', 'test3', "I'm a test"]
+  }
+  const forbiddenPrefixes =
+    forbiddenPrefixesByProject[projectId] ?? forbiddenPrefixesByProject.default
+  const normalizedPrefix = prefix.trim().toLowerCase()
+
+  return !forbiddenPrefixes.some((item) => item.toLowerCase() === normalizedPrefix)
+}
+
+// function getRandomMockMode() {
+//   const random = Math.random()
+//   const { success, businessError, networkError } = analysisTaskMockProbabilities
+
+//   if (random < success) return AnalysisTaskMockMode.SUCCESS
+//   if (random < success + businessError) return AnalysisTaskMockMode.BUSINESS_ERROR
+//   if (random < success + businessError + networkError) {
+//     return AnalysisTaskMockMode.NETWORK_ERROR
+//   }
+
+//   return AnalysisTaskMockMode.SERVER_ERROR
+// }
+
+// function getEffectiveMockMode() {
+//   return currentMockMode === AnalysisTaskMockMode.RANDOM ? getRandomMockMode() : currentMockMode
+// }
+
+function createMockError(message, code) {
+  return Object.assign(new Error(message), { code })
+}
+
+interface AnalysisTaskBuildRequest {
+  analysisName: string,
+  projectId: number,
+  pipelineType: number,
+  pipelineStageParameters: {
+    taxId: number | null,
+    extraParameters: null
+  }
+}
+
+export interface CreatedAnalysisTask {
+  name: string
+  id: number
+}
+
+export type AnalysisTaskBuildResponse =
+  | {
+      success: true
+      code: 'SUCCESS'
+      message: string
+      nameIdList: CreatedAnalysisTask[]
+    }
+  | {
+      success: false
+      code: string
+      message: string
+      nameIdList: null
+    }
+
+async function doAnalysisTaskRequest(
+  taskBuildRequestList: AnalysisTaskBuildRequest[]
+): Promise<AnalysisTaskBuildResponse> {
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      const mode = getEffectiveMockMode()
+
+      if (mode === AnalysisTaskMockMode.NETWORK_ERROR) {
+        reject(createMockError('模拟网络连接失败，请检查网络后重试', 'NETWORK_ERROR'))
+        return
+      }
+
+      if (mode === AnalysisTaskMockMode.SERVER_ERROR) {
+        reject(createMockError('模拟服务器内部错误，请稍后重试', 'SERVER_ERROR'))
+        return
+      }
+
+      if (mode === AnalysisTaskMockMode.BUSINESS_ERROR) {
+        resolve({
+          success: false,
+          code: 'TASK_NAME_CONFLICT',
+          message: '当前项目中存在其他重复的任务名称，不能创建',
+          nameIdList: null
+        })
+        return
+      }
+
+      resolve({
+        success: true,
+        code: 'SUCCESS',
+        message: '任务创建成功',
+        nameIdList: taskBuildRequestList.map((task) => ({
+          name: task.analysisName,
+          id: Math.random() * 100000
+        }))
+      })
+    }, 1000)
+  })
+}
+
+export async function requestBuildAnalysisTasks(
+  tasks: Array<{ name: string }>,
+  projectId: number,
+  pipelineType: number,
+  referenceTaxId: number | null
+): Promise<AnalysisTaskBuildResponse> {
+  const taskBuildRequestList = tasks.map((task) => ({
+    analysisName: task.name,
+    projectId,
+    pipelineType,
+    pipelineStageParameters: {
+      taxId: referenceTaxId,
+      extraParameters: null
+    }
+  }))
+
+  return doAnalysisTaskRequest(taskBuildRequestList)
+}
+
+
+import { RAW_RESPONSE_STATUS_BUSINESS_FAIL, RAW_RESPONSE_STATUS_OK, RawResponse } from "./common"
+
+export type TaskUploadMockMode =
+  | 'success'
+  | 'business-error'
+  | 'network-error'
+  | 'server-error'
+  | 'random'
+
+
+export type SequenceLevel = 0 | 1
+
+export const SEQUENCE_LEVEL_READ= 0
+export const SEQUENCE_LEVEL_ASSEMBLY = 1
+
+
+
+const API_SEQUENCE_LEVEL_READ = 0
+const API_SEQUENCE_LEVEL_ASSEMBLY = 1
+
+export interface AnalysisTaskUploadFileRequest {
+  file: File
+  taskId: number
+  key: string
+  sequenceLevel: SequenceLevel
+}
+
+
+
+export interface AnalysisTaskUploadResponse {
+  success: boolean
+  code: string
+  message: string
+}
+
+
+const mockProbabilities = {
+  success: 0.75,
+  businessError: 0.15,
+  networkError: 0.05,
+  serverError: 0.05
+}
+
+export function setTaskUploadMockMode(mode: TaskUploadMockMode): void {
+  currentMockMode = mode
+}
+
+function getRandomMockMode(): Exclude<TaskUploadMockMode, 'random'> {
+  const random = Math.random()
+
+  if (random < mockProbabilities.success) {
+    return 'success'
+  }
+
+  if (
+    random <
+    mockProbabilities.success + mockProbabilities.businessError
+  ) {
+    return 'business-error'
+  }
+
+  if (
+    random <
+    mockProbabilities.success +
+      mockProbabilities.businessError +
+      mockProbabilities.networkError
+  ) {
+    return 'network-error'
+  }
+
+  return 'server-error'
+}
+
+function getEffectiveMockMode(): Exclude<TaskUploadMockMode, 'random'> {
+  return currentMockMode === 'random'
+    ? getRandomMockMode()
+    : currentMockMode
+}
+
+function createUploadError(message: string, code: string): Error {
+  return Object.assign(new Error(message), { code })
+}
+
+function buildTaskUploadFormData(
+  taskUploadRequest: AnalysisTaskUploadFileRequest
+): FormData {
+
+  const formData = new FormData()
+  formData.append('pipelineId', String(taskUploadRequest.taskId))
+  formData.append('inputKey', taskUploadRequest.key)
+  formData.append('fileName', taskUploadRequest.file.name)
+  formData.append('fileType', String(taskUploadRequest.sequenceLevel === SEQUENCE_LEVEL_READ ? API_SEQUENCE_LEVEL_READ:API_SEQUENCE_LEVEL_ASSEMBLY))
+  formData.append('inputFile', taskUploadRequest.file)
+  return formData
+}
+
+
+async function doAnalysisUploadFile(formData):Promise<RawResponse<number>> {
+
+  await new Promise<void>(resolve => {
+    setTimeout(resolve, 700 + Math.random() * 800)
+  })
+
+  return {
+    status: 0,
+    data: 123,
+    failMsg: ''
+  }  
+}
+
+
+export const uploadAnalysisTaskInputResonseCode = {
+  inputExist: 100,
+  badKey: 120,
+  invalidKey: 110,
+
+  pipelineNotExist: 200,
+  pipelineAleardyStart: 201
+}
+export async function doUploadAnalysisTaskInput(
+  taskUploadRequest: AnalysisTaskUploadFileRequest
+): Promise<RawResponse<number>> {
+  const formData = buildTaskUploadFormData(taskUploadRequest)
+
+  // TODO: replace this mock with the real multipart upload request.
+  
+  const response = await doAnalysisUploadFile(formData)
+  const mode = getEffectiveMockMode()
+  if (mode === 'network-error') {
+    throw createUploadError('网络连接失败，请稍后重试', 'NETWORK_ERROR')
+  }
+  if (mode === 'server-error') {
+    throw createUploadError('服务器处理上传失败，请稍后重试', 'SERVER_ERROR')
+  }
+
+  if (mode === 'business-error') {
+    return {
+      status: RAW_RESPONSE_STATUS_BUSINESS_FAIL, 
+      data: -1,
+      failMsg: ''
+    }
+  }
+
+
+  return response
+}
