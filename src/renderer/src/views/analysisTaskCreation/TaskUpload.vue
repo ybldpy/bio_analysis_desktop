@@ -10,15 +10,15 @@ import {
     SEQUENCE_LEVEL_ASSEMBLY,
     SEQUENCE_LEVEL_READ,
     doUploadAnalysisTaskInput,
-    uploadAnalysisTaskInputResonseCode,
-    type AnalysisTaskUploadFiles
-} from '../../api/analysisPipeline'
+    uploadAnalysisTaskInputResonseCode} from '../../api/analysisPipeline'
 import {
-    getAnalysisPipelineTypeName,
     takeTaskUploadRequest,
     type AnalysisTask,
     type AnalysisTaskDataType
 } from './taskCreationCommon'
+
+import { getAnalysisPipelineTypeName } from '../../common/analysisPipeline'
+
 import { RAW_RESPONSE_STATUS_BUSINESS_FAIL, RAW_RESPONSE_STATUS_DUPLICATE_OPERATION, RAW_RESPONSE_STATUS_INTERNAL_FAIL, RAW_RESPONSE_STATUS_OK, RawResponse } from '../../api/common'
 
 type UploadPhase =

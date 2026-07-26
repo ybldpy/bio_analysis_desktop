@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import StatusTag from '../components/StatusTag.vue'
 import { pipelineNodes, resultFiles, tasks } from '../data/mockData'
 import type {
   AnalysisPipeline,
   AnalysisPipelineStage
-} from '../common/types/analysisPipeline'
+} from '../common/analysisPipeline.js'
 import {
   analysisPipelineStageStatus,
+  analysisPipelineTypeCodes,
   pipelineStageTypeCode,
   pipelineTypeCode,
   requestPipeline,
@@ -15,7 +16,8 @@ import {
 } from '../api/analysisPipeline'
 import { ElMessage } from 'element-plus'
 import { Graph, Selection } from '@antv/x6'
-import { getAnalysisPipelineTypeName } from './analysisTaskCreation/taskCreationCommon.js'
+import { getAnalysisPipelineTypeName } from '../common/analysisPipeline.js'
+import { prop } from '@antv/x6/lib/common/dom/prop.js'
 
 
 
@@ -110,6 +112,9 @@ const selectedNode = computed(() => pipelineNodes.find((item) => item.id === sel
 const pipelineLoading = ref(true)
 const initPipelineAndStagesFailed = ref(false)
 
+
+
+
 type StageStatus = 'waitting' | 'running' | 'failed' | 'actionRequired' | 'notApplicable'
 
 
@@ -123,8 +128,31 @@ interface StageNodeAppearance {
   className?: string
 }
 
+
+
+interface Taxon {
+  taxId: number
+  name: string
+  score: number
+}
+
+interface TaxonomyOutput {
+  status: number
+  best: Taxon
+  candiates: Taxon[]
+}
+
+interface StageResult {
+  displayName: string | null
+  resultOutputName: string | null
+  resultOutputUrl: string | null
+  resultOutputObject: null | TaxonomyOutput
+  downloading: boolean
+}
+
+
 interface PipelineDependencyConfig {
-  entries: number[]
+  entries: number[],
   stagesDependency: Record<number, number[]>
 }
 
@@ -232,17 +260,107 @@ const stageNodeAppearance: Record<
   }
 }
 
-interface AnalysisPipelineStageViewNode {
-  bindingStageId: number
-  stageName: string
-  stageStatus: StageStatus
-}
 
 const analysisPipeline = ref<AnalysisPipeline | null>(null)
 const pipelineStages = ref<AnalysisPipelineStage[]>([])
 const currentFocusStage = ref<AnalysisPipelineStage | null>(null)
 const flowGraphContainer = ref<HTMLElement | null>(null)
 let flowGraph: Graph | null = null
+const pipelineStagesResultsMap = ref<Map<number, StageResult[]>>(new Map())
+
+
+
+function getStageResultDisplayName(outputKey, stageType) {
+  const displayNameMap = {
+    r1: '质控后 Read1 数据',
+    r2: '质控后 Read2 数据',
+    html: '质控后html文件',
+    json: '质控后json文件',
+    amr: '耐药性分析结果',
+    serotype: '血清型分析结果',
+    mlst: 'MLST 分型结果',
+    bam: '序列比对结果',
+    bamIndex: '序列比对索引',
+    vcfgz: '压缩变异检测结果',
+    vcftbi: '变异检测结果索引',
+    coverageDepth: '测序覆盖深度',
+    consensus: '一致性序列',
+    annotatedvcf: '变异注释结果',
+    pafpath: '序列比对结果（PAF）',
+    differencepath: '序列差异分析结果'
+
+  }
+
+  const normalizedKey = outputKey.toLocaleLowerCase().trim()
+  const displayName = Object.entries(displayNameMap).find(([key, value]) => normalizedKey.includes(key))
+  return displayName === undefined ? '--' : displayName[1]
+}
+
+
+
+
+function createStageResults(pipelineStage: AnalysisPipelineStage, stageResults:StageResult[]) {
+
+
+  const stage = pipelineStage
+
+  let inlineOutput = null
+  if (stage.stageType === pipelineStageTypeCode.taxonomy) {
+    inlineOutput = stage.output.inline
+    stageResults.push({
+      displayName: '--',
+      resultOutputName: '--',
+      resultOutputUrl: '#',
+      resultOutputObject: (inlineOutput as TaxonomyOutput),
+      downloading: false
+    })
+  } else {
+    Object.entries(stage.output.urls).forEach(([key, url]) => {
+      if (url === null || url === undefined) {
+        return
+      }
+      stageResults.push({
+        displayName: getStageResultDisplayName(key, stage.stageType),
+        resultOutputName: url.substring(url.lastIndexOf("/") + 1),
+        resultOutputUrl: url,
+        resultOutputObject: null,
+        downloading: false
+      })
+    })
+  }
+
+}
+
+function updateStageResults(pipelineStage: AnalysisPipelineStage) {
+
+  const stageResults = pipelineStagesResultsMap.value.get(pipelineStage.stageId)
+  stageResults.splice(0, stageResults.length)
+  createStageResults(pipelineStage, stageResults)
+
+}
+
+watch(pipelineStages, (newStageList, oldStageList) => {
+
+  if (newStageList.length < 1) {
+    return
+  }
+
+  pipelineStages.value.forEach((stage) => {
+
+    let inlineOutput = null
+    let output: StageResult[] = []
+    pipelineStagesResultsMap.value.set(stage.stageId, output)
+
+    if (stage.status !== analysisPipelineStageStatus.completed) {
+      return
+    }
+
+    createStageResults(stage, pipelineStagesResultsMap.value.get(stage.stageId))
+  })
+
+
+}, { flush: 'post' })
+
 
 
 function getCurrentPipelineDependencyConfig():
@@ -252,7 +370,7 @@ function getCurrentPipelineDependencyConfig():
 
   let isInputReadLevel = false
 
-  if (analysisPipeline.value.pipelineType === pipelineTypeCode.covid19) {
+  if (analysisPipeline.value.pipelineType === analysisPipelineTypeCodes.virusCovid) {
     isInputReadLevel = true
   } else {
     isInputReadLevel = pipelineStages.value.some((stage) => stage.stageType === pipelineStageTypeCode.qc || stage.stageType === pipelineStageTypeCode.readInspect)
@@ -372,7 +490,8 @@ function initPipelineGraph() {
     ).forEach(([stageType, dependency]) => {
 
 
-      const stage = pipelineStages.value.find((stage) => { return stage.stageType === stageType })
+      console.log(stageType)
+      const stage = pipelineStages.value.find((stage) => { return stage.stageType === Number(stageType) })
 
       const dependencyStageIds = pipelineStages.value.filter((stage) => {
         return dependency.some((dependencyStageType) => { return dependencyStageType === stage.stageType })
@@ -485,22 +604,15 @@ function initPipelineGraph() {
       pipelineStages.value.find(
         stage => stage.stageId === stageId
       ) ?? null
+
+    updatePipelineStageNode(currentFocusStage.value)
   })
 
-  const initialStageId = Array.from(dependencyByStageId).find(([stageId, dependencyIds]) => {
-    return dependencyIds.length === 0
-  })[0]
+  updatePipelineStageNode(currentFocusStage.value)
+  flowGraph.resetSelection(
+    String(currentFocusStage.value.stageId)
+  )
 
-  const focusedStage = pipelineStages.value.find((stage) => stage.stageId === initialStageId)
-
-
-
-  if (focusedStage) {
-    currentFocusStage.value = focusedStage
-    flowGraph.resetSelection(
-      String(initialStageId)
-    )
-  }
 
   flowGraph.zoomToFit({
     padding: 24,
@@ -601,14 +713,45 @@ const intervalTaskExeuctionId = setInterval(() => {
   })
 }, 3500)
 
+
+watch(
+  [
+    flowGraphContainer,
+    analysisPipeline,
+    () => pipelineStages.value.length,
+    initPipelineAndStagesFailed
+  ],
+  ([
+    container,
+    pipeline,
+    stageCount,
+    loadFailed
+  ]) => {
+    if (!container || !pipeline || stageCount === 0 || loadFailed
+    ) {
+      return
+    }
+
+    initPipelineGraph()
+  },
+  {
+    flush: 'post'
+  }
+)
+
 async function loadPipelineAndStages() {
   pipelineLoading.value = true
+
+  let pipelineId = props.pipelineId
+
+  pipelineId = Math.ceil(Math.random() * 100000)
+
 
   try {
     const [pipelineResult, stagesResult] =
       await Promise.allSettled([
-        requestPipeline(props.pipelineId),
-        requestPipelineStages(props.pipelineId)
+        requestPipeline(pipelineId),
+        requestPipelineStages(pipelineId)
       ])
 
     if (
@@ -616,15 +759,38 @@ async function loadPipelineAndStages() {
       stagesResult.status === 'rejected'
     ) {
       initPipelineAndStagesFailed.value = true
+
+      if (pipelineResult.status === 'rejected') {
+        console.error(
+          '加载 Pipeline 信息失败：',
+          pipelineResult.reason
+        )
+      }
+
+      if (stagesResult.status === 'rejected') {
+        console.error(
+          '加载 Pipeline Stage 失败：',
+          stagesResult.reason
+        )
+      }
+
       ElMessage.error('加载分析流水线信息失败')
       return
     }
-
-    initPipelineAndStagesFailed.value = false
     analysisPipeline.value = pipelineResult.value
     pipelineStages.value = stagesResult.value
-    initPipelineGraph()
     intervalTasks.push(updateStages)
+    initPipelineAndStagesFailed.value = false
+
+    let focusStage = pipelineStages.value.find((stage) => {
+      stage.status === analysisPipelineStageStatus.completed
+    })
+
+    if (!focusStage) {
+      focusStage = pipelineStages.value[0]
+    }
+    currentFocusStage.value = focusStage
+    console.log('current stage' + currentFocusStage.value)
   } catch (error) {
     console.error(error)
     initPipelineAndStagesFailed.value = true
@@ -640,15 +806,38 @@ onBeforeUnmount(() => {
 })
 
 const statusMeta = {
-  completed: { label: '已完成', icon: 'Check', class: 'completed' },
-  running: { label: '运行中', icon: 'Loading', class: 'running' },
-  pending: { label: '等待中', icon: 'Clock', class: 'pending' },
-  failed: { label: '失败', icon: 'Close', class: 'failed' },
-  confirm: { label: '需要确认', icon: 'Warning', class: 'confirm' }
+  [analysisPipelineStageStatus.completed]: { label: '已完成', icon: 'Check', class: 'completed' },
+  [analysisPipelineStageStatus.running]: { label: '运行中', icon: 'Loading', class: 'running' },
+  [analysisPipelineStageStatus.pending]: {
+    label: '等待中',
+    icon: 'Clock',
+    class: 'pending'
+  },
+
+  [analysisPipelineStageStatus.queuing]: {
+    label: '排队中',
+    icon: 'Timer',
+    class: 'queuing'
+  },
+  [analysisPipelineStageStatus.failed]: { label: '失败', icon: 'Close', class: 'failed' },
+  [analysisPipelineStageStatus.actionRequired]: { label: '需要确认', icon: 'Warning', class: 'confirm' }
 }
 
 
+function formatStartDate(startDate: Date): string {
+  const year = startDate.getFullYear()
+  const month = String(startDate.getMonth() + 1).padStart(2, '0')
+  const day = String(startDate.getDate()).padStart(2, '0')
+  const hour = String(startDate.getHours()).padStart(2, '0')
+  const minute = String(startDate.getMinutes()).padStart(2, '0')
+  const second = String(startDate.getSeconds()).padStart(2, '0')
 
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`
+}
+
+function canShowResultOverview() {
+  return currentFocusStage.value != null && currentFocusStage.value.stageType !== pipelineStageTypeCode.readInspect && (currentFocusStage.value.status === analysisPipelineStageStatus.completed || currentFocusStage.value.status === analysisPipelineStageStatus.actionRequired)
+}
 
 
 onMounted(() => {
@@ -659,24 +848,20 @@ onBeforeUnmount(() => {
   clearInterval(intervalTaskExeuctionId)
 })
 
-const node = (id) => pipelineNodes.find((item) => item.id === id)
 </script>
 
 <template>
-  <div class="detail-page" v-loading="pipelineLoading" element-loading-text="正在加载...">
-    <div v-if="initPipelineAndStagesFailed" class="detail-load-error">
-      <el-result
-        icon="error"
-        title="任务详情加载失败"
-        sub-title="暂时无法获取分析流水线信息，请重新尝试"
-      >
+  <div class="detail-page">
+
+    <div v-if="pipelineLoading" class="loading-box" v-loading="pipelineLoading" element-loading-text="正在加载...">
+
+    </div>
+
+    <div class="detail-load-error" v-if="!pipelineLoading && initPipelineAndStagesFailed">
+      <el-result icon="error" title="任务详情加载失败" sub-title="暂时无法获取分析流水线信息，请重新尝试">
         <template #extra>
           <div class="detail-load-error-actions">
-            <el-button
-              type="primary"
-              :loading="pipelineLoading"
-              @click="loadPipelineAndStages"
-            >
+            <el-button type="primary" :loading="pipelineLoading" @click="loadPipelineAndStages">
               重新尝试
             </el-button>
             <el-button @click="emit('back')">
@@ -687,68 +872,68 @@ const node = (id) => pipelineNodes.find((item) => item.id === id)
       </el-result>
     </div>
 
-    <template v-else>
-    <div class="detail-header">
-      <el-button text class="back" @click="emit('back')"><el-icon>
-          <ArrowLeft />
-        </el-icon>返回任务列表</el-button>
-      <div class="title-row">
-        <div>
-          <div class="title-line">
-            <h1>{{ analysisPipeline?.analysisPipelineName ?? '--' }}</h1>
-            <!-- <StatusTag :status="task.status" /> -->
+    <template v-else-if="!pipelineLoading && !initPipelineAndStagesFailed">
+      <div class="detail-header">
+        <el-button text class="back" @click="emit('back')"><el-icon>
+            <ArrowLeft />
+          </el-icon>返回任务列表</el-button>
+        <div class="title-row">
+          <div>
+            <div class="title-line">
+              <h1>{{ analysisPipeline.analysisPipelineName }}</h1>
+              <!-- <StatusTag :status="task.status" /> -->
+            </div>
+            <!-- <p>{{ 'task.id' }} · {{ 'task.project' }}</p> -->
           </div>
-          <!-- <p>{{ 'task.id' }} · {{ 'task.project' }}</p> -->
-        </div>
-        <div class="actions">
-          <template>
-            <el-button @click="logVisible = true">
-              <el-icon>
-                <Document />
-              </el-icon>
-              运行日志
-            </el-button>
+          <div class="actions">
+            <template>
+              <el-button @click="logVisible = true">
+                <el-icon>
+                  <Document />
+                </el-icon>
+                运行日志
+              </el-button>
 
-            <el-button>
-              <el-icon>
-                <Download />
-              </el-icon>
-              下载结果
-            </el-button>
+              <el-button>
+                <el-icon>
+                  <Download />
+                </el-icon>
+                下载结果
+              </el-button>
 
-            <el-button type="primary">
-              <el-icon>
-                <DocumentChecked />
-              </el-icon>
-              查看报告
-            </el-button>
-          </template>
+              <el-button type="primary">
+                <el-icon>
+                  <DocumentChecked />
+                </el-icon>
+                查看报告
+              </el-button>
+            </template>
+          </div>
         </div>
-      </div>
-      <div class="summary-strip">
-        <div>
-          <span>分析类型</span><strong>{{ 'task.type' }}</strong>
-        </div>
-        <div>
-          <span>任务名称</span><strong>{{ 'task.sample' }}</strong>
-        </div>
-        <div>
-          <span>输入数据</span><strong>{{ 'task.input' }}</strong>
-        </div>
-        <div>
-          <span>创建时间</span><strong>{{ 'task.createdAt' }}</strong>
-        </div>
-        <div>
+        <div class="summary-strip">
+          <div>
+            <span>分析类型</span><strong>{{ getAnalysisPipelineTypeName(analysisPipeline.pipelineType) }}</strong>
+          </div>
+          <!-- <div>
+            <span>任务名称</span><strong>{{ 'task.sample' }}</strong>
+          </div> -->
+          <!-- <div>
+            <span>输入数据</span><strong>{{ 'task.input' }}</strong>
+          </div> -->
+          <div>
+            <span>创建时间</span><strong>{{ analysisPipeline.createTime.toLocaleDateString() }}</strong>
+          </div>
+          <!-- <div>
           <span>运行时长</span><strong>{{ 'task.duration' }}</strong>
+        </div> -->
         </div>
       </div>
-    </div>
 
-    <el-tabs v-model="activeTab" class="detail-tabs">
-      <el-tab-pane label="分析流水线" name="pipeline">
-        <div class="pipeline-layout">
-          <el-card shadow="never" class="pipeline-card">
-            <template #header>
+      <el-tabs v-model="activeTab" class="detail-tabs">
+        <el-tab-pane label="分析流水线" name="pipeline">
+          <div class="pipeline-layout">
+            <el-card shadow="never" class="pipeline-card">
+              <!-- <template #header>
               <div class="panel-header">
                 <div>
                   <strong>细菌全基因组分析流程</strong><small>节点状态实时更新 · 当前总体进度 {{ 'task.progress' }}%</small>
@@ -757,9 +942,9 @@ const node = (id) => pipelineNodes.find((item) => item.id === id)
                   <span><i class="done"></i>已完成</span><span><i class="run"></i>运行中</span><span><i></i>等待中</span>
                 </div>
               </div>
-            </template>
-            <div class="pipeline-canvas" ref="flowGraphContainer">
-              <!-- <div class="flow-row main-flow">
+            </template> -->
+              <div class="pipeline-canvas" ref="flowGraphContainer">
+                <!-- <div class="flow-row main-flow">
                 <button
                   v-for="id in ['preprocess', 'qc', 'assembly', 'species']"
                   :key="id"
@@ -830,45 +1015,69 @@ const node = (id) => pipelineNodes.find((item) => item.id === id)
                   ><span class="node-text"><strong>报告生成</strong><small>等待中</small></span>
                 </button>
               </div> -->
-            </div>
-          </el-card>
+              </div>
+            </el-card>
 
-          <el-card shadow="never" class="node-detail">
-            <template #header>
-              <div class="node-heading">
-                <span :class="['big-status', statusMeta[selectedNode.status].class]"><el-icon>
-                    <component :is="statusMeta[selectedNode.status].icon" />
-                  </el-icon></span>
-                <div>
-                  <strong>{{ selectedNode.name }}</strong><small>{{ 'statusMeta[selectedNode.status].label' }}</small>
+            <el-card shadow="never" class="node-detail">
+              <template #header>
+                <div class="node-heading">
+                  <span :class="['big-status', statusMeta[currentFocusStage.status].class]"><el-icon>
+                      <component :is="statusMeta[currentFocusStage.status].icon" />
+                    </el-icon></span>
+                  <div>
+                    <strong>{{ currentFocusStage.stageName }}</strong><small>{{
+                      statusMeta[currentFocusStage.status].label }}</small>
+                  </div>
                 </div>
+              </template>
+              <div class="node-body">
+                <div class="detail-pair">
+                  <span>执行状态</span><strong>{{ statusMeta[currentFocusStage.status].label }}</strong>
+                </div>
+                <div class="detail-pair">
+                  <span>开启时间</span><strong>{{
+                    currentFocusStage.startTime == null ? '--' : formatStartDate(currentFocusStage.startTime)
+                    }}</strong>
+                </div>
+                <el-divider />
+
+                <div v-if="canShowResultOverview()" class="detail-result-overview"
+                  style="display: flex;align-items: center; justify-content: center;">
+                  <div v-if="currentFocusStage.stageType !== pipelineStageTypeCode.taxonomy" style="width: 100%">
+                    <el-table :data="pipelineStagesResultsMap.get(currentFocusStage.stageId) ?? []" style="width: 100%">
+                      <el-table-column prop="displayName" label="结果" />
+                      <el-table-column prop="resultOutputName" label="文件名" />
+                      <el-table-column label="操作" width="100" align="right">
+                        <template #default="{ row }">
+                          <a :href="row.resultOutputUrl" :download="row.resultOutputName">
+                            <el-button type="primary" link>下载</el-button>
+                          </a>
+                        </template>
+                      </el-table-column>
+                    </el-table>
+                  </div>
+
+                  <div v-else></div>
+
+
+                </div>
+                <!-- <h3>阶段摘要</h3>
+                <p>{{ 'selectedNode.summary' }}</p>
+                <h3>输出文件</h3>
+                <div class="output-file">
+                  <el-icon>
+                    <Document />
+                  </el-icon><span>{{ 'selectedNode.output' }}</span><el-button v-if="true" link type="primary"><el-icon>
+                      <Download />
+                    </el-icon></el-button>
+                </div>
+                <el-button class="full-button" @click="logVisible = true"><el-icon>
+                    <Document />
+                  </el-icon>查看阶段日志</el-button> -->
               </div>
-            </template>
-            <div class="node-body">
-              <div class="detail-pair">
-                <span>执行状态</span><strong>{{ 'statusMeta[selectedNode.status].label' }}</strong>
-              </div>
-              <div class="detail-pair">
-                <span>运行耗时</span><strong>{{ 'selectedNode.duration' }}</strong>
-              </div>
-              <el-divider />
-              <h3>阶段摘要</h3>
-              <p>{{ 'selectedNode.summary' }}</p>
-              <h3>输出文件</h3>
-              <div class="output-file">
-                <el-icon>
-                  <Document />
-                </el-icon><span>{{ 'selectedNode.output' }}</span><el-button v-if="true" link type="primary"><el-icon>
-                    <Download />
-                  </el-icon></el-button>
-              </div>
-              <el-button class="full-button" @click="logVisible = true"><el-icon>
-                  <Document />
-                </el-icon>查看阶段日志</el-button>
-            </div>
-          </el-card>
-        </div>
-        <!-- <el-card shadow="never" class="run-info">
+            </el-card>
+          </div>
+          <!-- <el-card shadow="never" class="run-info">
           <div class="run-status">
             <span class="pulse"></span>
             <div>
@@ -879,26 +1088,26 @@ const node = (id) => pipelineNodes.find((item) => item.id === id)
             <span>预计剩余 4 分钟</span><el-progress :percentage="68" :stroke-width="7" />
           </div>
         </el-card> -->
-      </el-tab-pane>
+        </el-tab-pane>
 
-      <el-tab-pane label="样本信息" name="sample"><el-card shadow="never"><el-descriptions :column="3"
-            border><el-descriptions-item label="样本编号">{{ 'task.sample' }}</el-descriptions-item><el-descriptions-item
-              label="任务编号">{{ 'task.id' }}</el-descriptions-item><el-descriptions-item label="所属项目">{{ 'task.project'
-              }}</el-descriptions-item><el-descriptions-item label="数据类型">{{ 'task.input'
-              }}</el-descriptions-item><el-descriptions-item label="分析流程">{{ 'task.type'
-              }}</el-descriptions-item><el-descriptions-item
-              label="创建人">张老师</el-descriptions-item></el-descriptions></el-card></el-tab-pane>
-      <el-tab-pane label="结果文件" name="files"><el-card shadow="never"><el-table :data="resultFiles"><el-table-column
-              prop="name" label="文件名" min-width="240" /><el-table-column prop="stage" label="分析阶段" /><el-table-column
-              prop="type" label="格式" /><el-table-column prop="size" label="大小" /><el-table-column prop="updatedAt"
-              label="生成时间" /><el-table-column label="操作"><template #default><el-button link
-                  type="primary">下载</el-button></template></el-table-column></el-table></el-card></el-tab-pane>
-      <el-tab-pane label="确认记录" name="records"><el-empty description="暂无用户确认记录" /></el-tab-pane>
+        <el-tab-pane label="样本信息" name="sample"><el-card shadow="never"><el-descriptions :column="3"
+              border><el-descriptions-item label="样本编号">{{ 'task.sample' }}</el-descriptions-item><el-descriptions-item
+                label="任务编号">{{ 'task.id' }}</el-descriptions-item><el-descriptions-item label="所属项目">{{ 'task.project'
+                }}</el-descriptions-item><el-descriptions-item label="数据类型">{{ 'task.input'
+                }}</el-descriptions-item><el-descriptions-item label="分析流程">{{ 'task.type'
+                }}</el-descriptions-item><el-descriptions-item
+                label="创建人">张老师</el-descriptions-item></el-descriptions></el-card></el-tab-pane>
+        <el-tab-pane label="结果文件" name="files"><el-card shadow="never"><el-table :data="resultFiles"><el-table-column
+                prop="name" label="文件名" min-width="240" /><el-table-column prop="stage" label="分析阶段" /><el-table-column
+                prop="type" label="格式" /><el-table-column prop="size" label="大小" /><el-table-column prop="updatedAt"
+                label="生成时间" /><el-table-column label="操作"><template #default><el-button link
+                    type="primary">下载</el-button></template></el-table-column></el-table></el-card></el-tab-pane>
+        <!-- <el-tab-pane label="确认记录" name="records"><el-empty description="暂无用户确认记录" /></el-tab-pane> -->
 
 
-    </el-tabs>
+      </el-tabs>
 
-    <!-- <el-drawer v-model="logVisible" title="运行日志" size="560px">
+      <!-- <el-drawer v-model="logVisible" title="运行日志" size="560px">
       <div class="log-toolbar">
         <el-tag type="success">实时更新</el-tag><el-button text><el-icon>
             <Download />
@@ -923,9 +1132,12 @@ const node = (id) => pipelineNodes.find((item) => item.id === id)
 .detail-page {
   max-width: 1280px;
   margin: 0 auto;
+  /* height: calc(100vh - 120px); */
 }
 
-.detail-load-error {
+
+.detail-load-error,
+.loading-box {
   min-height: calc(100vh - 150px);
   display: flex;
   align-items: center;
