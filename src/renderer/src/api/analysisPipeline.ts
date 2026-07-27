@@ -20,6 +20,29 @@ interface AnalysisPipelineDTO {
 }
 
 export type AnalysisPipelineType = 100 | 101 | 200 | 400 | 401
+export const taxonomyResultStatusCode = {
+  confident: 0,
+  ambiguous: 1,
+  lowConfidence: 2,
+  outPanel: 3,
+  userManul: 4
+}
+
+
+
+export const pipelineInputConstants = {
+  pipelineInputFileRoleRead: 10,
+  pipelineInputFileRoleAssembly: 11
+}
+export interface PipelineInput {
+  inputFileId: number
+  pipelineId: number
+  fileRole: number
+  fileName: string
+  status: number
+  inputKey: string
+}
+
 
 export interface ReferenceGenomeMeta {
   genomeLength: string
@@ -39,6 +62,15 @@ export interface ReferenceGenome {
 export interface FetchReferenceGenomeResult {
   referenceGenomes: ReferenceGenome[]
   totalRecords: number
+}
+
+export interface PipelineState {
+  pipelineId: number
+  pipelineName: string
+  pipelineType: number
+  projectName: string
+  pipelineInputs: PipelineInput[]
+  pipelineStages: AnalysisPipelineStage[]
 }
 
 interface MockReferenceGenomeSpecies {
@@ -261,6 +293,41 @@ function getMockAnalysisPipelineStages(pipelineId: number): AnalysisPipelineStag
     }
   }
 
+  const getStageOutputInline = (
+    stageType: number,
+    status: number
+  ): Record<string, unknown> => {
+    if (stageType === pipelineStageTypeCode.taxonomy) {
+      return {
+        status: taxonomyResultStatusCode.ambiguous,
+        best: {
+          taxId: 562,
+          name: 'Escherichia coli',
+          score: 0.987
+        },
+        candiates: [
+          {
+            taxId: 573,
+            name: 'Klebsiella pneumoniae',
+            score: 0.824
+          },
+          {
+            taxId: 28901,
+            name: 'Salmonella enterica',
+            score: 0.716
+          },
+          {
+            taxId: 620,
+            name: 'Shigella',
+            score: 0.681
+          }
+        ]
+      }
+    }
+
+    return status === analysisPipelineStageStatus.running ? { progress: 68 } : {}
+  }
+
   const createStage = (index: number, stageName: string, stageType: number, status: number) => ({
     stageId: pipelineId * 100 + index,
     stageName,
@@ -274,7 +341,7 @@ function getMockAnalysisPipelineStages(pipelineId: number): AnalysisPipelineStag
       status === analysisPipelineStageStatus.completed
         ? getStageOutputUrls(pipelineId * 100 + index, stageType)
         : {},
-    outputInline: status === analysisPipelineStageStatus.running ? { progress: 68 } : {}
+    outputInline: getStageOutputInline(stageType, status)
   })
 
   if (mockPipelineType === analysisPipelineTypeCodes.regularVirus) {
@@ -321,14 +388,14 @@ function getMockAnalysisPipelineStages(pipelineId: number): AnalysisPipelineStag
         4,
         '物种鉴定',
         pipelineStageTypeCode.taxonomy,
-        analysisPipelineStageStatus.running
+        analysisPipelineStageStatus.completed
       ),
-      createStage(5, 'AMR', pipelineStageTypeCode.amr, analysisPipelineStageStatus.pending),
+      createStage(5, 'AMR', pipelineStageTypeCode.amr, analysisPipelineStageStatus.running),
       createStage(
         6,
         '毒力因子',
         pipelineStageTypeCode.virulence,
-        analysisPipelineStageStatus.pending
+        analysisPipelineStageStatus.running
       ),
       createStage(7, 'MLST', pipelineStageTypeCode.mlst, analysisPipelineStageStatus.pending),
       createStage(8, 'cgMLST', pipelineStageTypeCode.cgmlst, analysisPipelineStageStatus.pending),
@@ -748,6 +815,19 @@ async function doAnalysisUploadFile(formData): Promise<RawResponse<number>> {
   }
 }
 
+export async function doComfirmTaxonomy(stageId: number, taxId: number):Promise<RawResponse<void>>{
+
+
+
+  await new Promise((res) => {
+    setTimeout(res, 600);
+  })
+  //TODO
+  return ({} as RawResponse<void>)
+
+
+}
+
 export const uploadAnalysisTaskInputResonseCode = {
   inputExist: 100,
   badKey: 120,
@@ -781,4 +861,110 @@ export async function doUploadAnalysisTaskInput(
   }
 
   return response
+}
+
+
+
+export async function doRequestPipelineStates(
+  pipelineIds: number[] = []
+): Promise<RawResponse<PipelineState[]>> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 300 + Math.random() * 400)
+  })
+
+  const targetPipelineIds =
+    pipelineIds.length > 0
+      ? pipelineIds
+      : Array.from({ length: 12 }, (_, index) => index + 1)
+
+  const mockProjectNames = [
+    '肠道致病菌监测（第三批）',
+    '呼吸道病毒哨点监测',
+    '院感菌株溯源分析',
+    '食品来源沙门氏菌调查'
+  ]
+
+  const pipelineStates = await Promise.all(
+    targetPipelineIds.map(async (pipelineId) => {
+      const pipeline = getMockPipeline(pipelineId)
+      const pipelineInputResponse = await doRequestPipelineInput(pipelineId)
+
+      return {
+        pipelineId,
+        pipelineName: pipeline.analysisPipelineName,
+        pipelineType: pipeline.pipelineType,
+        projectName:
+          mockProjectNames[pipelineId % mockProjectNames.length],
+        pipelineInputs: pipelineInputResponse.data,
+        pipelineStages: getMockAnalysisPipelineStages(pipelineId).map(
+          convertPipelineStageDTO
+        )
+      }
+    })
+  )
+
+  return {
+    status: RAW_RESPONSE_STATUS_OK,
+    data: pipelineStates,
+    failMsg: ''
+  }
+}
+
+export async function doRequestPipelineInput(pipelineId: number):Promise<RawResponse<PipelineInput[]>>{
+
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 300 + Math.random() * 400)
+  })
+
+  const inputType = Math.floor(Math.random() * 3)
+  let pipelineInputs: PipelineInput[]
+
+  if (inputType === 0) {
+    pipelineInputs = [
+      {
+        inputFileId: pipelineId * 10 + 1,
+        pipelineId,
+        fileRole: pipelineInputConstants.pipelineInputFileRoleRead,
+        fileName: `pipeline_${pipelineId}_R1.fastq.gz`,
+        status: 0,
+        inputKey: 'r1'
+      },
+      {
+        inputFileId: pipelineId * 10 + 2,
+        pipelineId,
+        fileRole: pipelineInputConstants.pipelineInputFileRoleRead,
+        fileName: `pipeline_${pipelineId}_R2.fastq.gz`,
+        status: 0,
+        inputKey: 'r2'
+      }
+    ]
+  } else if (inputType === 1) {
+    pipelineInputs = [
+      {
+        inputFileId: pipelineId * 10 + 1,
+        pipelineId,
+        fileRole: pipelineInputConstants.pipelineInputFileRoleRead,
+        fileName: `pipeline_${pipelineId}.fastq.gz`,
+        status: 0,
+        inputKey: 'r1'
+      }
+    ]
+  } else {
+    pipelineInputs = [
+      {
+        inputFileId: pipelineId * 10 + 1,
+        pipelineId,
+        fileRole: pipelineInputConstants.pipelineInputFileRoleAssembly,
+        fileName: `pipeline_${pipelineId}_contigs.fasta`,
+        status: 0,
+        inputKey: 'assembly'
+      }
+    ]
+  }
+
+  return {
+    status: RAW_RESPONSE_STATUS_OK,
+    data: pipelineInputs,
+    failMsg: ''
+  }
 }

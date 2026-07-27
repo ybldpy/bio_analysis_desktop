@@ -17,6 +17,7 @@ import {
   setTaskUploadRequest,
   type TaskUploadRequest
 } from './taskCreationCommon'
+import { RAW_RESPONSE_STATUS_OK } from '../../api/common'
 
 const emit = defineEmits(['cancel', 'submitted', 'upload'])
 const activeSectionId = ref(0)
@@ -351,8 +352,14 @@ async function initProjectList() {
   projectListLoading.value = true
 
   try {
-    const analysisProjectList = await fetchProjectList()
-    projectList.value = analysisProjectList
+    const analysisProjectListResponse = await fetchProjectList()
+
+    if(analysisProjectListResponse.status !== RAW_RESPONSE_STATUS_OK){
+      ElMessage.error('项目列表加载失败'+analysisProjectListResponse.failMsg)
+    }
+    projectList.value = analysisProjectListResponse.data
+
+
   } catch (error) {
     console.error(error)
     ElMessage.error('项目列表加载失败')

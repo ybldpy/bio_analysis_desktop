@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeMount, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import StatusTag from '../components/StatusTag.vue'
 import { pipelineNodes, resultFiles, tasks } from '../data/mockData'
 import type {
@@ -9,15 +9,20 @@ import type {
 import {
   analysisPipelineStageStatus,
   analysisPipelineTypeCodes,
+  doComfirmTaxonomy,
+  PipelineInput,
   pipelineStageTypeCode,
+  pipelineStatusCode,
   pipelineTypeCode,
   requestPipeline,
-  requestPipelineStages
+  requestPipelineStages,
+  taxonomyResultStatusCode
 } from '../api/analysisPipeline'
 import { ElMessage } from 'element-plus'
 import { Graph, Selection } from '@antv/x6'
 import { getAnalysisPipelineTypeName } from '../common/analysisPipeline.js'
 import { prop } from '@antv/x6/lib/common/dom/prop.js'
+import { RAW_RESPONSE_STATUS_OK } from '../api/common.js'
 
 
 
@@ -299,7 +304,7 @@ function getStageResultDisplayName(outputKey, stageType) {
 
 
 
-function createStageResults(pipelineStage: AnalysisPipelineStage, stageResults:StageResult[]) {
+function createStageResults(pipelineStage: AnalysisPipelineStage, stageResults: StageResult[]) {
 
 
   const stage = pipelineStage
@@ -336,8 +341,34 @@ function updateStageResults(pipelineStage: AnalysisPipelineStage) {
   const stageResults = pipelineStagesResultsMap.value.get(pipelineStage.stageId)
   stageResults.splice(0, stageResults.length)
   createStageResults(pipelineStage, stageResults)
-
 }
+
+
+
+const allFinishedResultsViewList = computed(() => {
+
+  const resultViewList = []
+  const finishedStages = pipelineStages.value.filter((stage) => { return stage.status === analysisPipelineStageStatus.completed })
+  pipelineStagesResultsMap.value.forEach((stageResults, stageId) => {
+    const stage = finishedStages.find(stage => stage.stageId === stageId)
+    if (!stage) {
+      console.log('error: not find target stage: ' + stageId)
+      return
+    }
+    if (stageResults.length < 1 || stage.stageType === pipelineStageTypeCode.readInspect || stage.stageType === pipelineStageTypeCode.taxonomy) {
+      return
+    }
+    resultViewList.push(...stageResults.map((stageResult) => {
+      return {
+        stageName: stage.stageName,
+        result: stageResult
+      }
+    }))
+  })
+
+
+  return resultViewList
+})
 
 watch(pipelineStages, (newStageList, oldStageList) => {
 
@@ -622,6 +653,37 @@ function initPipelineGraph() {
 }
 
 
+async function downloadOutput(stageResult:StageResult){
+  if (stageResult.downloading) {
+    return
+  }
+
+  if (!stageResult.resultOutputUrl) {
+    ElMessage.error('结果文件下载地址不存在')
+    return
+  }
+
+  stageResult.downloading = true
+
+  try {
+    await nextTick()
+
+    const downloadLink = document.createElement('a')
+    downloadLink.href = stageResult.resultOutputUrl
+    downloadLink.download = stageResult.resultOutputName ?? ''
+    downloadLink.style.display = 'none'
+
+    document.body.appendChild(downloadLink)
+    downloadLink.click()
+    downloadLink.remove()
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('结果文件下载失败')
+  } finally {
+    stageResult.downloading = false
+  }
+}
+
 
 const updateStages = (() => {
 
@@ -746,6 +808,8 @@ async function loadPipelineAndStages() {
 
   pipelineId = Math.ceil(Math.random() * 100000)
 
+  pipelineId = 1
+
 
   try {
     const [pipelineResult, stagesResult] =
@@ -800,10 +864,7 @@ async function loadPipelineAndStages() {
   }
 }
 
-onBeforeUnmount(() => {
-  flowGraph?.dispose()
-  flowGraph = null
-})
+
 
 const statusMeta = {
   [analysisPipelineStageStatus.completed]: { label: '已完成', icon: 'Check', class: 'completed' },
@@ -839,14 +900,95 @@ function canShowResultOverview() {
   return currentFocusStage.value != null && currentFocusStage.value.stageType !== pipelineStageTypeCode.readInspect && (currentFocusStage.value.status === analysisPipelineStageStatus.completed || currentFocusStage.value.status === analysisPipelineStageStatus.actionRequired)
 }
 
+const currentTaxonomyOutput = computed<TaxonomyOutput | null>(() => {
+  if (
+    currentFocusStage.value == null ||
+    currentFocusStage.value.stageType !== pipelineStageTypeCode.taxonomy
+  ) {
+    return null
+  }
 
-onMounted(() => {
+  const taxonomyOutput =
+    currentFocusStage.value.output.inline as Partial<TaxonomyOutput>
+
+  return taxonomyOutput.best ? taxonomyOutput as TaxonomyOutput : null
+})
+
+const taxonomyConfirmationViewList = ref<Taxon[]>([])
+
+watch(currentTaxonomyOutput, (newOutput, oldOutput) => {
+
+  if (newOutput === null || newOutput.candiates.length < 1) {
+    taxonomyConfirmationViewList.value = []
+    return
+  }
+  newOutput.candiates?.forEach((taxon) => {
+    taxonomyConfirmationViewList.value.push(taxon)
+  })
+})
+
+
+
+const selectedComfirmationTaxon = ref<Taxon | null>(null)
+const isComfirmingTaxonomy = ref(false)
+
+
+
+async function comfirmTaxonomy() {
+
+  const stage = currentFocusStage.value
+  const selectedTaxon = selectedComfirmationTaxon.value
+
+  if (stage === null || selectedTaxon === null) {
+    ElMessage.warning('请选择需要确认的物种')
+    return
+  }
+
+  isComfirmingTaxonomy.value = true
+
+  try {
+    const response = await doComfirmTaxonomy(stage.stageId, selectedTaxon.taxId)
+
+    response.status = RAW_RESPONSE_STATUS_OK
+    if (response.status !== RAW_RESPONSE_STATUS_OK) {
+      ElMessage.error(response.failMsg)
+      return
+    } else {
+      ElMessage.success('人工确认成功')
+    }
+    stage.status = analysisPipelineStageStatus.completed
+
+    const taxonomyOutput =
+      stage.output.inline as Partial<TaxonomyOutput>
+
+    taxonomyOutput.status = taxonomyResultStatusCode.userManul
+    taxonomyOutput.best = selectedTaxon
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('人工确认物种失败，请稍后重试')
+  } finally {
+    isComfirmingTaxonomy.value = false
+  }
+}
+
+
+const pipelineInputs = ref<PipelineInput[]>([])
+
+
+
+
+
+
+onBeforeMount(() => {
   loadPipelineAndStages()
 })
 
 onBeforeUnmount(() => {
+  flowGraph?.dispose()
+  flowGraph = null
   clearInterval(intervalTaskExeuctionId)
 })
+
 
 </script>
 
@@ -933,88 +1075,7 @@ onBeforeUnmount(() => {
         <el-tab-pane label="分析流水线" name="pipeline">
           <div class="pipeline-layout">
             <el-card shadow="never" class="pipeline-card">
-              <!-- <template #header>
-              <div class="panel-header">
-                <div>
-                  <strong>细菌全基因组分析流程</strong><small>节点状态实时更新 · 当前总体进度 {{ 'task.progress' }}%</small>
-                </div>
-                <div class="legend">
-                  <span><i class="done"></i>已完成</span><span><i class="run"></i>运行中</span><span><i></i>等待中</span>
-                </div>
-              </div>
-            </template> -->
               <div class="pipeline-canvas" ref="flowGraphContainer">
-                <!-- <div class="flow-row main-flow">
-                <button
-                  v-for="id in ['preprocess', 'qc', 'assembly', 'species']"
-                  :key="id"
-                  :class="[
-                    'node',
-                    statusMeta[node(id).status].class,
-                    { selected: selectedNodeId === id }
-                  ]"
-                  @click="selectedNodeId = id"
-                >
-                  <span class="node-icon"
-                    ><el-icon><component :is="statusMeta[node(id).status].icon" /></el-icon></span
-                  ><span class="node-text"
-                    ><strong>{{ node(id).name }}</strong
-                    ><small>{{ statusMeta[node(id).status].label }}</small></span
-                  >
-                </button>
-              </div>
-              <div class="branch-line one"></div>
-              <div class="flow-row branch-flow first">
-                <button
-                  v-for="id in ['amr', 'virulence', 'mlst']"
-                  :key="id"
-                  :class="[
-                    'node',
-                    statusMeta[node(id).status].class,
-                    { selected: selectedNodeId === id }
-                  ]"
-                  @click="selectedNodeId = id"
-                >
-                  <span class="node-icon"
-                    ><el-icon><component :is="statusMeta[node(id).status].icon" /></el-icon></span
-                  ><span class="node-text"
-                    ><strong>{{ node(id).name }}</strong
-                    ><small>{{ statusMeta[node(id).status].label }}</small></span
-                  >
-                </button>
-              </div>
-              <div class="branch-line two"></div>
-              <div class="flow-row branch-flow second">
-                <button
-                  v-for="id in ['cgmlst', 'serotype']"
-                  :key="id"
-                  :class="[
-                    'node',
-                    statusMeta[node(id).status].class,
-                    { selected: selectedNodeId === id }
-                  ]"
-                  @click="selectedNodeId = id"
-                >
-                  <span class="node-icon"
-                    ><el-icon><component :is="statusMeta[node(id).status].icon" /></el-icon></span
-                  ><span class="node-text"
-                    ><strong>{{ node(id).name }}</strong
-                    ><small>{{ statusMeta[node(id).status].label }}</small></span
-                  >
-                </button>
-                <button
-                  :class="[
-                    'node',
-                    statusMeta[node('report').status].class,
-                    { selected: selectedNodeId === 'report' }
-                  ]"
-                  @click="selectedNodeId = 'report'"
-                >
-                  <span class="node-icon"
-                    ><el-icon><Document /></el-icon></span
-                  ><span class="node-text"><strong>报告生成</strong><small>等待中</small></span>
-                </button>
-              </div> -->
               </div>
             </el-card>
 
@@ -1047,17 +1108,77 @@ onBeforeUnmount(() => {
                     <el-table :data="pipelineStagesResultsMap.get(currentFocusStage.stageId) ?? []" style="width: 100%">
                       <el-table-column prop="displayName" label="结果" />
                       <el-table-column prop="resultOutputName" label="文件名" />
-                      <el-table-column label="操作" width="100" align="right">
+                      <el-table-column label="操作" width="120" align="right">
                         <template #default="{ row }">
-                          <a :href="row.resultOutputUrl" :download="row.resultOutputName">
-                            <el-button type="primary" link>下载</el-button>
-                          </a>
+                            <el-button type="primary" link :loading="row.downloading" @click="downloadOutput(row)">
+                              <span v-if="!row.downloading">下载</span>
+                            </el-button>
                         </template>
                       </el-table-column>
                     </el-table>
                   </div>
 
-                  <div v-else></div>
+                  <div v-else style="width: 100%">
+                    <template v-if="currentTaxonomyOutput">
+                      <el-descriptions v-if="currentTaxonomyOutput.status === taxonomyResultStatusCode.confident"
+                        title="最佳匹配结果" :column="1" border size="small">
+                        <el-descriptions-item label="物种名称">
+                          {{ currentTaxonomyOutput.best.name }}
+                        </el-descriptions-item>
+                        <el-descriptions-item label="Tax ID">
+                          {{ currentTaxonomyOutput.best.taxId }}
+                        </el-descriptions-item>
+                        <el-descriptions-item label="匹配评分">
+                          {{ currentTaxonomyOutput.best.score }}
+                        </el-descriptions-item>
+                      </el-descriptions>
+
+                      <el-descriptions v-if="currentTaxonomyOutput.status === taxonomyResultStatusCode.userManul"
+                        title="人工确认结果" :column="1" border size="small">
+                        <el-descriptions-item label="物种名称">
+                          {{ currentTaxonomyOutput.best.name }}
+                        </el-descriptions-item>
+                        <el-descriptions-item label="Tax ID">
+                          {{ currentTaxonomyOutput.best.taxId }}
+                        </el-descriptions-item>
+                      </el-descriptions>
+
+                      <!-- 这里是物种鉴定的结果是需要用户手动选择的时候才有的。用户可以手动输入物种。当然了也可以选择某个在candiates里面的一个物种。下面的table不要动，就保持 -->
+                      <div v-else v-loading="isComfirmingTaxonomy">
+                        <template v-if="currentTaxonomyOutput.status !== taxonomyResultStatusCode.outPanel">
+                          <el-alert title="系统未能确定唯一物种" description="请选择候选物种，或者手动输入物种名称。" type="warning"
+                            :closable="false" show-icon />
+                          <el-form label-position="top" style="margin-top: 16px">
+                            <el-form-item label="确认物种">
+                              <el-select v-model="selectedComfirmationTaxon" value-key='taxId' clearable
+                                placeholder="选择候选物种或输入物种名称" style="width: 100%">
+                                <el-option v-for="taxon in taxonomyConfirmationViewList" :key="taxon.taxId"
+                                  :label="`${taxon.name}（Tax ID: ${taxon.taxId}）`" :value="taxon" />
+                              </el-select>
+                            </el-form-item>
+                          </el-form>
+
+                          <el-button type="primary" @click="comfirmTaxonomy">确认物种</el-button>
+                        </template>
+
+
+                        <template v-else>
+                          <el-alert title="物种超出鉴定范围" description="当前样本超出系统支持范围，依赖物种鉴定的后续分析流程已终止" type="error"
+                            :closable="false" show-icon />
+                        </template>
+
+
+                      </div>
+                      <el-divider content-position="center">候选物种</el-divider>
+
+                      <el-table :data="currentTaxonomyOutput.candiates" style="width: 100%">
+                        <el-table-column prop="name" label="物种名称" />
+                        <el-table-column prop="taxId" label="Tax ID" width="100" />
+                        <el-table-column prop="score" label="匹配评分" width="100" />
+                      </el-table>
+                    </template>
+                    <el-empty v-else description="暂无物种鉴定结果" />
+                  </div>
 
 
                 </div>
@@ -1090,18 +1211,31 @@ onBeforeUnmount(() => {
         </el-card> -->
         </el-tab-pane>
 
-        <el-tab-pane label="样本信息" name="sample"><el-card shadow="never"><el-descriptions :column="3"
+        <!-- <el-tab-pane label="样本信息" name="sample"><el-card shadow="never"><el-descriptions :column="3"
               border><el-descriptions-item label="样本编号">{{ 'task.sample' }}</el-descriptions-item><el-descriptions-item
                 label="任务编号">{{ 'task.id' }}</el-descriptions-item><el-descriptions-item label="所属项目">{{ 'task.project'
                 }}</el-descriptions-item><el-descriptions-item label="数据类型">{{ 'task.input'
                 }}</el-descriptions-item><el-descriptions-item label="分析流程">{{ 'task.type'
                 }}</el-descriptions-item><el-descriptions-item
-                label="创建人">张老师</el-descriptions-item></el-descriptions></el-card></el-tab-pane>
-        <el-tab-pane label="结果文件" name="files"><el-card shadow="never"><el-table :data="resultFiles"><el-table-column
-                prop="name" label="文件名" min-width="240" /><el-table-column prop="stage" label="分析阶段" /><el-table-column
-                prop="type" label="格式" /><el-table-column prop="size" label="大小" /><el-table-column prop="updatedAt"
-                label="生成时间" /><el-table-column label="操作"><template #default><el-button link
-                    type="primary">下载</el-button></template></el-table-column></el-table></el-card></el-tab-pane>
+                label="创建人">张老师</el-descriptions-item></el-descriptions></el-card></el-tab-pane> -->
+        <el-tab-pane label="结果文件" name="files">
+          <el-card shadow="never"><el-table :data="allFinishedResultsViewList">
+              <el-table-column prop="result.resultOutputName" label="文件名" min-width="120" />
+              <el-table-column prop="stageName" label="分析阶段" />
+              <!-- <el-table-column prop="" label="格式" />
+              <el-table-column prop="size" label="大小" />
+              <el-table-column prop="updatedAt" label="生成时间" /> -->
+              <el-table-column label="操作">
+                <template #default="{row}">
+                  <el-button link type="primary" :loading="row.result.downloading" @click="downloadOutput(row.result)">
+                    <span v-if="!row.result.downloading">下载</span>
+                  </el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+
+        </el-tab-pane>
         <!-- <el-tab-pane label="确认记录" name="records"><el-empty description="暂无用户确认记录" /></el-tab-pane> -->
 
 
