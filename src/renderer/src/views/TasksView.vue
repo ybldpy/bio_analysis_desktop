@@ -146,11 +146,10 @@ function getPipelineProgress(pipelineState: PipelineState) {
       stage.status === analysisPipelineStageStatus.completed ||
       stage.status === analysisPipelineStageStatus.notApplicable
   ).length;
-
   return completedCount / total * 100;
-
-
 }
+
+
 
 
 

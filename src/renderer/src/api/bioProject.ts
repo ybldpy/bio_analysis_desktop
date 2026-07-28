@@ -1,7 +1,8 @@
+import { backendAPI, backendService } from "./backendService"
 import { RAW_RESPONSE_STATUS_OK, RawResponse } from "./common"
 
 export interface BioProject {
-  projectId: number
+  pid: number
   projectName: string
   description: string
 }
@@ -57,34 +58,14 @@ export async function requestCreateProject({
   projectName: string
   description: string
 }): Promise<RawResponse<number>> {
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, 500 + Math.random() * 500)
-  })
+  return await backendService.post(backendAPI.createProject, {
+    projectName: projectName,
+    description: description
+  });
 
-  const projectId =
-    Math.max(...mockBioProjects.map((project) => project.projectId)) + 1
-
-  mockBioProjects.push({
-    projectId,
-    projectName,
-    description
-  })
-
-  return {
-    status: RAW_RESPONSE_STATUS_OK,
-    data: projectId,
-    failMsg: ''
-  }
+  
 }
 
 export async function fetchProjectList(): Promise<RawResponse<BioProject[]>> {
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, 500)
-  })
-
-  return {
-    status: RAW_RESPONSE_STATUS_OK,
-    failMsg: null,
-    data: mockBioProjects
-  }
+  return await backendService.get(backendAPI.getAllProjects)
 }

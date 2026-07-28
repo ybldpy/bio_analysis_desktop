@@ -1,8 +1,8 @@
 import { analysisPipelineTypeCodes } from "../api/analysisPipeline"
 
 export interface AnalysisPipelineStageOutput {
-    urls: Record<string, string>
-    inline: Record<string, unknown>
+    urls: Record<string, any>
+    inline: Record<string, any>
 }
 
 export interface AnalysisPipelineStage {

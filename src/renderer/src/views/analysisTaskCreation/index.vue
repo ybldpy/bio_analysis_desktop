@@ -138,18 +138,28 @@ const onBatchNameChange = (() => {
       const sentRequestId = ++latestSentRequest
       try {
         batchNamePrefixAvailable.value = 2
-        const canUse = await canUseBatchPrefix(normalizedPrefix, analysisTasksBuildJob.projectId)
+
+        console.log("checking prefix "+ normalizedPrefix)
+        const canUseReponse = await canUseBatchPrefix(normalizedPrefix, analysisTasksBuildJob.projectId)
 
         // 旧请求的结果直接丢弃
         if (sentRequestId !== latestSentRequest) {
           return
         }
 
-        if (canUse) {
+        if (canUseReponse.status!==RAW_RESPONSE_STATUS_OK) {
+          ElMessage.error(canUseReponse.failMsg)
+          batchNamePrefixAvailable.value = -1
+          return
+        }
+
+        if(canUseReponse.data){
           batchNamePrefixAvailable.value = 0
-        } else {
+        }else {
           batchNamePrefixAvailable.value = 1
         }
+
+
       } catch (error) {
         // 旧请求的错误也不处理
         if (sentRequestId !== latestSentRequest) {
@@ -357,6 +367,8 @@ async function initProjectList() {
     if(analysisProjectListResponse.status !== RAW_RESPONSE_STATUS_OK){
       ElMessage.error('项目列表加载失败'+analysisProjectListResponse.failMsg)
     }
+
+    debugger
     projectList.value = analysisProjectListResponse.data
 
 
@@ -688,8 +700,8 @@ function selectSpeceficType(speceficTypeId) {
         </div>
         <el-form label-position="top"><el-form-item label="所属项目" required><el-select
               v-model="analysisTasksBuildJob.projectId" filterable placeholder="请选择项目" style="width: 100%"><el-option
-                v-for="item in projectList" :key="item.projectId" :label="item.projectName"
-                :value="item.projectId" /></el-select></el-form-item></el-form>
+                v-for="item in projectList" :key="item.pid" :label="item.projectName"
+                :value="item.pid" /></el-select></el-form-item></el-form>
         <el-divider />
         <div class="section-heading">
           <span>02</span>

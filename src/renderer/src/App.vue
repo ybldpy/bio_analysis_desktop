@@ -1,5 +1,5 @@
-<script setup>
-import { computed, ref } from 'vue'
+<script setup lang="ts">
+import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import DashboardView from './views/DashboardView.vue'
 import ProjectsView from './views/ProjectsView.vue'
@@ -13,7 +13,7 @@ import { tasks } from './data/mockData'
 const activePage = ref('dashboard')
 const previousPage = ref('tasks')
 const collapsed = ref(false)
-const selectedTask = ref(tasks[0])
+let selectedPipelineId = -1
 
 const menuGroups = [
   {
@@ -66,10 +66,23 @@ function navigate(page) {
   activePage.value = page
 }
 
-function viewTask(task) {
-  selectedTask.value = task
+
+
+const currentComponentProps = computed(() => {
+  if(activePage.value === 'task-detail'){
+    return {
+      pipelineId: selectedPipelineId
+    }
+  }
+  return {}
+})
+
+function viewTask(pipelineId) {
+
+  console.log("view task event "+pipelineId)
   previousPage.value = activePage.value
   activePage.value = 'task-detail'
+  selectedPipelineId = pipelineId
 }
 
 function handleBack() {
@@ -201,7 +214,7 @@ function handleBack() {
           <component
             :is="currentComponent"
             :key="activePage"
-            :task="activePage === 'task-detail' ? selectedTask : undefined"
+            v-bind="currentComponentProps"
             @navigate="navigate"
             @view-task="viewTask"
             @cancel="handleBack"

@@ -108,6 +108,7 @@ Graph.registerNode(
 
 const props = defineProps<{
   pipelineId: number
+  
 }>()
 const emit = defineEmits(['back'])
 const activeTab = ref('pipeline')
@@ -310,7 +311,11 @@ function createStageResults(pipelineStage: AnalysisPipelineStage, stageResults: 
   const stage = pipelineStage
 
   let inlineOutput = null
-  if (stage.stageType === pipelineStageTypeCode.taxonomy) {
+
+  if(stage.stageType === pipelineStageTypeCode.readInspect){
+    return
+  }
+  else if (stage.stageType === pipelineStageTypeCode.taxonomy) {
     inlineOutput = stage.output.inline
     stageResults.push({
       displayName: '--',
@@ -324,6 +329,9 @@ function createStageResults(pipelineStage: AnalysisPipelineStage, stageResults: 
       if (url === null || url === undefined) {
         return
       }
+
+
+      
       stageResults.push({
         displayName: getStageResultDisplayName(key, stage.stageType),
         resultOutputName: url.substring(url.lastIndexOf("/") + 1),
@@ -524,9 +532,15 @@ function initPipelineGraph() {
       console.log(stageType)
       const stage = pipelineStages.value.find((stage) => { return stage.stageType === Number(stageType) })
 
+      if(stage === undefined){
+        return
+      }
+
       const dependencyStageIds = pipelineStages.value.filter((stage) => {
         return dependency.some((dependencyStageType) => { return dependencyStageType === stage.stageType })
       }).map((stage) => { return stage.stageId })
+
+      
 
       dependencyByStageId.set(stage.stageId, dependencyStageIds)
 
@@ -739,11 +753,15 @@ function updatePipelineStageNode(
   const appearance =
     stageNodeAppearance[stage.status]
 
-  node.setData({
-    status: stage.status
-  })
+  // node.setData({
+  //   status: stage.status
+  // })
+
 
   node.attr({
+    label: {
+      text: `${stage.stageName}\n${appearance.label}`
+    },
     body: {
       fill: appearance.background,
       stroke: appearance.color,
@@ -806,9 +824,11 @@ async function loadPipelineAndStages() {
 
   let pipelineId = props.pipelineId
 
-  pipelineId = Math.ceil(Math.random() * 100000)
+  // pipelineId = Math.ceil(Math.random() * 100000)
 
-  pipelineId = 1
+  // pipelineId = 1
+
+  console.log("pipeline id"+pipelineId)
 
 
   try {
