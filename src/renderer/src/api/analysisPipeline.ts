@@ -30,7 +30,6 @@ export const taxonomyResultStatusCode = {
 }
 
 
-
 export const pipelineInputConstants = {
   pipelineInputFileRoleRead: 10,
   pipelineInputFileRoleAssembly: 11
@@ -52,17 +51,18 @@ export interface ReferenceGenomeMeta {
 
 export interface ReferenceGenome {
   refId: number
-  speciesName: string
+  refseqName: string
   sourceDB: string
   taxId: number
-  meta: ReferenceGenomeMeta
-  accessions: string[]
+  meta: Record<string,string> | any
+  accessions: string[] | string
   isSegment: boolean
 }
 
+
 export interface FetchReferenceGenomeResult {
   referenceGenomes: ReferenceGenome[]
-  totalRecords: number
+  total: number
 }
 
 export interface PipelineState {
@@ -150,304 +150,11 @@ export const analysisPipelineTypeCodes = Object.freeze({
   metagenomeShotgun: 401
 })
 
-// const mockAnalysisPipelineStages: AnalysisPipelineStageDTO[] = [
-//   {
-//     stageId: 1,
-//     stageName: '数据预处理',
-//     status: analysisPipelineStageStatus.completed,
-//     startTime: '2026-07-25T09:00:00+08:00',
-//     stageType: 100,
-//     outputUrl: {
-//       cleanManifest: '/mock/pipelines/1/preprocess/clean_manifest.json'
-//     },
-//     outputInline: {
-//       inputFileCount: 2,
-//       paired: true
-//     }
-//   },
-//   {
-//     stageId: 2,
-//     stageName: '数据质控',
-//     status: analysisPipelineStageStatus.completed,
-//     startTime: '2026-07-25T09:02:18+08:00',
-//     stageType: 101,
-//     outputUrl: {
-//       report: '/mock/pipelines/1/qc/fastp_report.html'
-//     },
-//     outputInline: {
-//       q30: 94.7,
-//       cleanReads: 6824310
-//     }
-//   },
-//   {
-//     stageId: 3,
-//     stageName: '基因组组装',
-//     status: analysisPipelineStageStatus.completed,
-//     startTime: '2026-07-25T09:11:00+08:00',
-//     stageType: 102,
-//     outputUrl: {
-//       contigs: '/mock/pipelines/1/assembly/contigs.fasta'
-//     },
-//     outputInline: {
-//       totalLength: 5120000,
-//       n50: 186420
-//     }
-//   },
-//   {
-//     stageId: 4,
-//     stageName: '物种鉴定',
-//     status: analysisPipelineStageStatus.running,
-//     startTime: '2026-07-25T09:22:05+08:00',
-//     stageType: 103,
-//     outputUrl: {},
-//     outputInline: {
-//       progress: 68
-//     }
-//   },
-//   {
-//     stageId: 5,
-//     stageName: '耐药基因分析',
-//     status: analysisPipelineStageStatus.pending,
-//     startTime: null,
-//     stageType: 104,
-//     outputUrl: {},
-//     outputInline: {}
-//   },
-//   {
-//     stageId: 6,
-//     stageName: '报告生成',
-//     status: analysisPipelineStageStatus.pending,
-//     startTime: null,
-//     stageType: 105,
-//     outputUrl: {},
-//     outputInline: {}
-//   }
-// ]
-
 const mockPipelineTypeData = [
   analysisPipelineTypeCodes.regularVirus,
   analysisPipelineTypeCodes.regularBacteria,
   analysisPipelineTypeCodes.virusCovid
 ]
-
-// function getMockAnalysisPipelineStages(pipelineId: number): AnalysisPipelineStageDTO[] {
-//   const mockPipelineType = mockPipelineTypeData[pipelineId % 3]
-
-//   const getStageOutputUrls = (
-//     stageId: number,
-//     stageType: number
-//   ): Record<string, string> => {
-//     const outputBasePath = `stageOutput/${stageId}`
-
-//     switch (stageType) {
-//       case pipelineStageTypeCode.qc:
-//         return {
-//           cleanedR1: `${outputBasePath}/cleaned_r1.fastq.gz`,
-//           cleanedR2: `${outputBasePath}/cleaned_r2.fastq.gz`,
-//           reportHTML: `${outputBasePath}/cleaned.html`,
-//           reportJSON: `${outputBasePath}/cleaned.json`
-//         }
-//       case pipelineStageTypeCode.mapping:
-//       case pipelineStageTypeCode.mappingNoRefseq:
-//         return {
-//           bamUrl: `${outputBasePath}/result.bam`,
-//           bamIndexUrl: `${outputBasePath}/result.bam.bai`
-//         }
-//       case pipelineStageTypeCode.variantCall:
-//         return {
-//           vcfGzUrl: `${outputBasePath}/variants.vcf.gz`,
-//           vcfTbiUrl: `${outputBasePath}/variants.vcf.gz.tbi`,
-//           coverageDepth: `${outputBasePath}/coverage_depth.tsv`
-//         }
-//       case pipelineStageTypeCode.consensus:
-//         return {
-//           consensusUrl: `${outputBasePath}/consensus.fa`
-//         }
-//       case pipelineStageTypeCode.amr:
-//         return {
-//           amrResult: `${outputBasePath}/amr.tsv`
-//         }
-//       case pipelineStageTypeCode.mlst:
-//         return {
-//           mlst: `${outputBasePath}/mlst.tsv`
-//         }
-//       case pipelineStageTypeCode.serotype:
-//         return {
-//           serotypeResultUrl: `${outputBasePath}/serotypeResult.txt`
-//         }
-//       case pipelineStageTypeCode.assembly:
-//         return {
-//           contigsUrl: `${outputBasePath}/contigs.fasta`,
-//           scaffoldUrl: `${outputBasePath}/scaffolds.fasta`
-//         }
-//       case pipelineStageTypeCode.snpAnnotation:
-//         return {
-//           annotatedVCF: `${outputBasePath}/annotated.vcf`
-//         }
-//       case pipelineStageTypeCode.referenceComparison:
-//         return {
-//           pafPath: `${outputBasePath}/alignment.paf`,
-//           differenceTsv: `${outputBasePath}/reference_difference.tsv`
-//         }
-//       default:
-//         return {}
-//     }
-//   }
-
-//   const getStageOutputInline = (
-//     stageType: number,
-//     status: number
-//   ): Record<string, unknown> => {
-//     if (stageType === pipelineStageTypeCode.taxonomy) {
-//       return {
-//         status: taxonomyResultStatusCode.ambiguous,
-//         best: {
-//           taxId: 562,
-//           name: 'Escherichia coli',
-//           score: 0.987
-//         },
-//         candiates: [
-//           {
-//             taxId: 573,
-//             name: 'Klebsiella pneumoniae',
-//             score: 0.824
-//           },
-//           {
-//             taxId: 28901,
-//             name: 'Salmonella enterica',
-//             score: 0.716
-//           },
-//           {
-//             taxId: 620,
-//             name: 'Shigella',
-//             score: 0.681
-//           }
-//         ]
-//       }
-//     }
-
-//     return status === analysisPipelineStageStatus.running ? { progress: 68 } : {}
-//   }
-
-//   const createStage = (index: number, stageName: string, stageType: number, status: number) => ({
-//     stageId: pipelineId * 100 + index,
-//     stageName,
-//     status,
-//     startTime:
-//       status === analysisPipelineStageStatus.pending
-//         ? null
-//         : `2026-07-25T09:${String(index * 3).padStart(2, '0')}:00+08:00`,
-//     stageType,
-//     outputUrl:
-//       status === analysisPipelineStageStatus.completed
-//         ? getStageOutputUrls(pipelineId * 100 + index, stageType)
-//         : {},
-//     outputInline: getStageOutputInline(stageType, status)
-//   })
-
-//   if (mockPipelineType === analysisPipelineTypeCodes.regularVirus) {
-//     return [
-//       createStage(
-//         1,
-//         '预处理',
-//         pipelineStageTypeCode.readInspect,
-//         analysisPipelineStageStatus.completed
-//       ),
-//       createStage(2, '质控', pipelineStageTypeCode.qc, analysisPipelineStageStatus.completed),
-//       createStage(3, '组装', pipelineStageTypeCode.mapping, analysisPipelineStageStatus.completed),
-//       createStage(
-//         4,
-//         '变异调用',
-//         pipelineStageTypeCode.variantCall,
-//         analysisPipelineStageStatus.pending
-//       ),
-//       createStage(
-//         6,
-//         '一致性序列生成',
-//         pipelineStageTypeCode.consensus,
-//         analysisPipelineStageStatus.pending
-//       )
-//     ]
-//   }
-
-//   if (mockPipelineType === analysisPipelineTypeCodes.regularBacteria) {
-//     return [
-//       createStage(
-//         1,
-//         '预处理',
-//         pipelineStageTypeCode.readInspect,
-//         analysisPipelineStageStatus.completed
-//       ),
-//       createStage(2, '质控', pipelineStageTypeCode.qc, analysisPipelineStageStatus.completed),
-//       createStage(
-//         3,
-//         '无参组装',
-//         pipelineStageTypeCode.assembly,
-//         analysisPipelineStageStatus.completed
-//       ),
-//       createStage(
-//         4,
-//         '物种鉴定',
-//         pipelineStageTypeCode.taxonomy,
-//         analysisPipelineStageStatus.completed
-//       ),
-//       createStage(5, 'AMR', pipelineStageTypeCode.amr, analysisPipelineStageStatus.running),
-//       createStage(
-//         6,
-//         '毒力因子',
-//         pipelineStageTypeCode.virulence,
-//         analysisPipelineStageStatus.running
-//       ),
-//       createStage(7, 'MLST', pipelineStageTypeCode.mlst, analysisPipelineStageStatus.pending),
-//       createStage(8, 'cgMLST', pipelineStageTypeCode.cgmlst, analysisPipelineStageStatus.pending),
-//       createStage(9, '血清型', pipelineStageTypeCode.serotype, analysisPipelineStageStatus.pending)
-//     ]
-//   }
-
-//   return [
-//     createStage(
-//       1,
-//       '预处理',
-//       pipelineStageTypeCode.readInspect,
-//       analysisPipelineStageStatus.completed
-//     ),
-//     createStage(2, '质控', pipelineStageTypeCode.qc, analysisPipelineStageStatus.completed),
-//     createStage(3, '组装', pipelineStageTypeCode.mapping, analysisPipelineStageStatus.completed),
-//     createStage(
-//       4,
-//       '变异调用',
-//       pipelineStageTypeCode.variantCall,
-//       analysisPipelineStageStatus.pending
-//     ),
-//     createStage(
-//       6,
-//       '一致性序列生成',
-//       pipelineStageTypeCode.consensus,
-//       analysisPipelineStageStatus.pending
-//     ),
-//     createStage(
-//       7,
-//       'SNP注释',
-//       pipelineStageTypeCode.snpAnnotation,
-//       analysisPipelineStageStatus.pending
-//     )
-//   ]
-// }
-
-
-// function convertPipelineStageDTO(dto: AnalysisPipelineStageDTO): AnalysisPipelineStage {
-//   return {
-//     stageId: dto.stageId,
-//     stageName: dto.stageName,
-//     status: dto.status,
-//     startTime: dto.startTime ? new Date(dto.startTime) : null,
-//     stageType: dto.stageType,
-//     output: {
-//       urls: { ...dto.outputUrl },
-//       inline: { ...dto.outputInline }
-//     }
-//   }
-// }
 
 function getMockPipeline(pipelineId: number): AnalysisPipelineDTO {
   return {
@@ -549,60 +256,35 @@ const mockReferenceGenomeSpecies: MockReferenceGenomeSpecies[] = [
   { name: 'Campylobacter jejuni', taxId: 197, genomeLength: 1.64 }
 ]
 
-const mockReferenceGenomes: ReferenceGenome[] = mockReferenceGenomeSpecies.flatMap(
-  (species, speciesIndex) =>
-    Array.from({ length: 5 }, (_, strainIndex) => {
-      const index = speciesIndex * 5 + strainIndex + 1
-
-      return {
-        refId: index,
-        speciesName: `${species.name} strain MOCK-${strainIndex + 1}`,
-        sourceDB: 'NCBI RefSeq',
-        taxId: species.taxId,
-        meta: {
-          genomeLength: `${(species.genomeLength + strainIndex * 0.03).toFixed(2)} Mb`,
-          version: `v${strainIndex + 1}`
-        },
-        accessions: [`GCF_${String(900000000 + index).padStart(9, '0')}.${strainIndex + 1}`],
-        isSegment: false
-      }
-    })
-)
-
 export async function fetchReferenceGenomeList(
   query: string,
   start: number,
   size: number
-): Promise<FetchReferenceGenomeResult> {
-  await new Promise((resolve) => {
-    setTimeout(resolve, 500)
-  })
+): Promise<RawResponse<FetchReferenceGenomeResult>> {
+  
 
-  const normalizedQuery = String(query ?? '')
-    .trim()
-    .toLowerCase()
-  const normalizedStart = Math.max(0, Number(start) || 0)
-  const normalizedSize = Math.max(1, Number(size) || 20)
+  const response = await backendService.post(backendAPI.queryReferenceGenomes, {
+    query: query,
+    start: start,
+    pageSize: size
+  }) as RawResponse<FetchReferenceGenomeResult>
 
-  const filteredReferenceGenomes = normalizedQuery
-    ? mockReferenceGenomes.filter((referenceGenome) =>
-        [
-          referenceGenome.refId,
-          referenceGenome.speciesName,
-          referenceGenome.taxId,
-          referenceGenome.sourceDB,
-          ...referenceGenome.accessions
-        ].some((field) => String(field).toLowerCase().includes(normalizedQuery))
-      )
-    : mockReferenceGenomes
 
-  return {
-    referenceGenomes: filteredReferenceGenomes.slice(
-      normalizedStart,
-      normalizedStart + normalizedSize
-    ),
-    totalRecords: filteredReferenceGenomes.length
+
+  if(response.status === RAW_RESPONSE_STATUS_OK){
+    response.data.referenceGenomes.forEach((referenceGenome) => {
+      if(referenceGenome.accessions){
+        referenceGenome.accessions = (JSON.parse(referenceGenome.accessions as string) as string[])
+      }
+    })
   }
+
+
+  
+  return response
+
+
+
 }
 
 export async function canUseBatchPrefix(prefix, projectId) {
@@ -614,23 +296,6 @@ export async function canUseBatchPrefix(prefix, projectId) {
 
   return response
 }
-
-// function getRandomMockMode() {
-//   const random = Math.random()
-//   const { success, businessError, networkError } = analysisTaskMockProbabilities
-
-//   if (random < success) return AnalysisTaskMockMode.SUCCESS
-//   if (random < success + businessError) return AnalysisTaskMockMode.BUSINESS_ERROR
-//   if (random < success + businessError + networkError) {
-//     return AnalysisTaskMockMode.NETWORK_ERROR
-//   }
-
-//   return AnalysisTaskMockMode.SERVER_ERROR
-// }
-
-// function getEffectiveMockMode() {
-//   return currentMockMode === AnalysisTaskMockMode.RANDOM ? getRandomMockMode() : currentMockMode
-// }
 
 function createMockError(message, code) {
   return Object.assign(new Error(message), { code })
@@ -651,77 +316,44 @@ export interface CreatedAnalysisTask {
   id: number
 }
 
-export type AnalysisTaskBuildResponse =
-  | {
-      success: true
-      code: 'SUCCESS'
-      message: string
-      nameIdList: CreatedAnalysisTask[]
-    }
-  | {
-      success: false
-      code: string
-      message: string
-      nameIdList: null
-    }
-
-async function doAnalysisTaskRequest(
-  taskBuildRequestList: AnalysisTaskBuildRequest[]
-): Promise<AnalysisTaskBuildResponse> {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      const mode = getEffectiveMockMode()
-
-      if (mode === AnalysisTaskMockMode.NETWORK_ERROR) {
-        reject(createMockError('模拟网络连接失败，请检查网络后重试', 'NETWORK_ERROR'))
-        return
-      }
-
-      if (mode === AnalysisTaskMockMode.SERVER_ERROR) {
-        reject(createMockError('模拟服务器内部错误，请稍后重试', 'SERVER_ERROR'))
-        return
-      }
-
-      if (mode === AnalysisTaskMockMode.BUSINESS_ERROR) {
-        resolve({
-          success: false,
-          code: 'TASK_NAME_CONFLICT',
-          message: '当前项目中存在其他重复的任务名称，不能创建',
-          nameIdList: null
-        })
-        return
-      }
-
-      resolve({
-        success: true,
-        code: 'SUCCESS',
-        message: '任务创建成功',
-        nameIdList: taskBuildRequestList.map((task) => ({
-          name: task.analysisName,
-          id: Math.random() * 100000
-        }))
-      })
-    }, 1000)
-  })
-}
-
 export async function requestBuildAnalysisTasks(
   tasks: Array<{ name: string }>,
   projectId: number,
   pipelineType: number,
-  referenceTaxId: number | null
-): Promise<AnalysisTaskBuildResponse> {
-  const taskBuildRequestList = tasks.map((task) => ({
-    analysisName: task.name,
-    projectId,
-    pipelineType,
-    pipelineStageParameters: {
-      taxId: referenceTaxId,
-      extraParameters: null
-    }
-  }))
+  referenceId: number | null
+): Promise<RawResponse<number[]>> {
 
-  return doAnalysisTaskRequest(taskBuildRequestList)
+  const requestBody = {
+    projectId: projectId,
+    pipelineType: pipelineType,
+    pipelines: []
+  }
+
+  const pipelines = tasks.map((task) => {
+
+    return {
+      pipelineName: task.name,
+      pipelineParameters: {
+        referenceId: referenceId
+      }
+    }
+  })
+  requestBody.pipelines = pipelines
+
+
+  await new Promise((res) => setTimeout(res, 1000))
+
+  // if(true){
+  //   return {
+  //     status: RAW_RESPONSE_STATUS_OK,
+  //     failMsg: null,
+  //     data: tasks.map((task, index) => {
+  //       return index
+  //     })
+  //   }
+  // }
+
+  return await backendService.post(backendAPI.batchCreatePipelines, requestBody)
 }
 
 import { RAW_RESPONSE_STATUS_BUSINESS_FAIL, RAW_RESPONSE_STATUS_OK, RawResponse } from './common'
@@ -734,8 +366,8 @@ export type SequenceLevel = 0 | 1
 export const SEQUENCE_LEVEL_READ = 0
 export const SEQUENCE_LEVEL_ASSEMBLY = 1
 
-const API_SEQUENCE_LEVEL_READ = 0
-const API_SEQUENCE_LEVEL_ASSEMBLY = 1
+const API_SEQUENCE_LEVEL_READ = 10
+const API_SEQUENCE_LEVEL_ASSEMBLY = 11
 
 export interface AnalysisTaskUploadFileRequest {
   file: File
@@ -782,14 +414,6 @@ function getRandomMockMode(): Exclude<TaskUploadMockMode, 'random'> {
   return 'server-error'
 }
 
-function getEffectiveMockMode(): Exclude<TaskUploadMockMode, 'random'> {
-  return currentMockMode === 'random' ? getRandomMockMode() : currentMockMode
-}
-
-function createUploadError(message: string, code: string): Error {
-  return Object.assign(new Error(message), { code })
-}
-
 function buildTaskUploadFormData(taskUploadRequest: AnalysisTaskUploadFileRequest): FormData {
   const formData = new FormData()
   formData.append('pipelineId', String(taskUploadRequest.taskId))
@@ -832,6 +456,21 @@ export async function doComfirmTaxonomy(stageId: number, taxId: number):Promise<
 
 }
 
+
+
+export async function requestStartPipeline(pipelineId: number):Promise<RawResponse<boolean>>{
+
+
+
+
+
+  return await backendService.get(backendAPI.startPipeline, {
+    params: {
+      pipelineId: pipelineId
+    }
+  });
+}
+
 export const uploadAnalysisTaskInputResonseCode = {
   inputExist: 100,
   badKey: 120,
@@ -843,30 +482,24 @@ export const uploadAnalysisTaskInputResonseCode = {
 export async function doUploadAnalysisTaskInput(
   taskUploadRequest: AnalysisTaskUploadFileRequest
 ): Promise<RawResponse<number>> {
+
+
+  await new Promise((res) => {setTimeout(res, 1200)})
   const formData = buildTaskUploadFormData(taskUploadRequest)
 
-  // TODO: replace this mock with the real multipart upload request.
-
-  const response = await doAnalysisUploadFile(formData)
-  const mode = getEffectiveMockMode()
-  if (mode === 'network-error') {
-    throw createUploadError('网络连接失败，请稍后重试', 'NETWORK_ERROR')
-  }
-  if (mode === 'server-error') {
-    throw createUploadError('服务器处理上传失败，请稍后重试', 'SERVER_ERROR')
-  }
-
-  if (mode === 'business-error') {
-    return {
-      status: RAW_RESPONSE_STATUS_BUSINESS_FAIL,
-      data: -1,
-      failMsg: ''
+  // if(true) {
+  //   return {
+  //     status: RAW_RESPONSE_STATUS_OK,
+  //     data: 1,
+  //     failMsg: null
+  //   }
+  // }
+  return await backendService.post(backendAPI.pipelineInputFileUpload, formData, {
+    headers:{
+      'Content-Type': 'multipart/form-data'
     }
-  }
-
-  return response
+  })
 }
-
 
 
 export async function doRequestPipelineStates(

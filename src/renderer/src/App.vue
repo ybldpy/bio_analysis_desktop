@@ -21,17 +21,17 @@ const menuGroups = [
     items: [
       { id: 'dashboard', label: '首页概览', icon: 'House' },
       { id: 'projects', label: '项目管理', icon: 'FolderOpened' },
-      { id: 'tasks', label: '任务管理', icon: 'List' },
-      { id: 'results', label: '结果中心', icon: 'DataAnalysis' }
-    ]
-  },
-  {
-    label: '资源',
-    items: [
-      { id: 'references', label: '参考数据库', icon: 'Coin' },
-      { id: 'downloads', label: '下载中心', icon: 'Download' }
+      { id: 'tasks', label: '任务管理', icon: 'List' }
+      // { id: 'results', label: '结果中心', icon: 'DataAnalysis' }
     ]
   }
+  // {
+  //   label: '资源',
+  //   items: [
+  //     { id: 'references', label: '参考数据库', icon: 'Coin' },
+  //     { id: 'downloads', label: '下载中心', icon: 'Download' }
+  //   ]
+  // }
 ]
 
 const pageTitle = computed(() => {

@@ -5,9 +5,10 @@ import StatusTag from '../components/StatusTag.vue'
 import { tasks } from '../data/mockData'
 import { BioProject, fetchProjectList } from '../api/bioProject.js'
 import { AnalysisPipeline, AnalysisPipelineStage, getAnalysisPipelineTypeName } from '../common/analysisPipeline.js'
-import { analysisPipelineStageStatus, doRequestPipelineStates, PipelineInput, pipelineInputConstants, PipelineState } from '../api/analysisPipeline.js'
+import { analysisPipelineStageStatus, analysisPipelineTypeCodes, doRequestPipelineStates, PipelineInput, pipelineInputConstants, PipelineState } from '../api/analysisPipeline.js'
 import { ElMessage } from 'element-plus'
 import { RAW_RESPONSE_STATUS_OK } from '../api/common.js'
+import { query } from 'node_modules/axios/index.cjs'
 
 const emit = defineEmits(['navigate', 'view-task'])
 const search = ref('')
@@ -27,19 +28,31 @@ const filtered = computed(() =>
   })
 )
 
-const statusCounts = [
-  { label: '全部任务', value: 286, status: '全部状态' },
-  { label: '运行中', value: 6, status: '运行中' },
-  { label: '等待确认', value: 1, status: '需要确认' },
-  { label: '失败', value: 3, status: '失败' }
-]
 
+const pipelineFilterStateSelections = {
+  all: '全部状态', 
+  running: '运行中',
+  actionRequired: '等待确认',
+  failed: '失败',
+  pending: '等待上传序列',
+  completed: '已完成'
+}
 
+const currentPipelineRunningStateSelection = ref('all')
+
+const pipelineTypeFilterSelections = {
+  '-1' : '全部类型',
+  [analysisPipelineTypeCodes.virusCovid]: '新冠全基因分析',
+  [analysisPipelineTypeCodes.regularVirus]: '常规病毒全基因分析',
+  [analysisPipelineTypeCodes.regularBacteria]: '常规细菌全基因分析',
+  [analysisPipelineTypeCodes.metagenomeAmplicon16]:'16S 扩增子分析',
+  [analysisPipelineTypeCodes.metagenomeShotgun]: '宏基因组鸟枪法分析'
+}
+
+const currentSelectedPipelineTypeSelection = ref('-1')
 
 const pipelineQuery = reactive({
   query: '',
-  state: '',
-  pipelineType: -1,
   page: 1,
   pageSize: 20
 })
@@ -67,8 +80,27 @@ async function loadPipelineState() {
 
 loadPipelineState()
 
+
+
+const pipelineDisplayStateMap = computed<Map<number, string>>(() => {
+  const displayStateMap = new Map<number, string>();
+  pipelineStateList.value.forEach((state) => {
+    displayStateMap.set(state.pipelineId, getPipelineDisplayStatus(state))
+  })
+
+  return displayStateMap
+})
+
 const pipelineStateTableView = computed(() => {
+
+  if(pipelineStateList.value.length < 1){
+    return {
+      rows: [],
+      total: 0
+    }
+  }
   const normalizedQuery = pipelineQuery.query.trim().toLowerCase()
+
 
   let filteredPipelineStates = normalizedQuery
     ? pipelineStateList.value.filter((pipelineState) =>
@@ -81,6 +113,24 @@ const pipelineStateTableView = computed(() => {
     )
     : pipelineStateList.value
 
+    filteredPipelineStates = filteredPipelineStates.filter((state) => {
+      if(currentPipelineRunningStateSelection.value === "all"){
+        return true
+      }
+
+      return currentPipelineRunningStateSelection.value === getPipelineDisplayStatus(state);
+    }).filter((state) => {
+      if(currentSelectedPipelineTypeSelection.value === "-1"){
+        return true;
+      }
+      return currentSelectedPipelineTypeSelection.value === String(state.pipelineType)
+    })
+
+
+
+
+
+
   const start = (pipelineQuery.page - 1) * pipelineQuery.pageSize
 
   return {
@@ -92,11 +142,23 @@ const pipelineStateTableView = computed(() => {
   }
 })
 
-function getPipelineInputsTypeName(pipelineInputs: PipelineInput[]) {
-  if (pipelineInputs.length > 1) {
+function getPipelineInputsTypeName(pipelineState: PipelineState) {
+
+
+ // console.log("pipeline state list length " + pipelineStateList.value.length)
+
+
+
+ 
+
+
+  if (pipelineState.pipelineInputs.length > 1) {
     return '双端FASTQ'
+  }else if(pipelineState.pipelineInputs.length < 1){
+    return '--'
   }
-  return pipelineInputs[0].fileRole === pipelineInputConstants.pipelineInputFileRoleRead ? '单端FASTQ' : '组装contigs'
+
+  return pipelineState.pipelineInputs[0].fileRole === pipelineInputConstants.pipelineInputFileRoleRead ? '单端FASTQ' : '组装contigs'
 }
 
 function getPipelineDisplayStatus(pipelineState: PipelineState) {
@@ -162,27 +224,30 @@ function getPipelineProgress(pipelineState: PipelineState) {
           <Plus />
         </el-icon>新建分析任务</el-button>
     </PageHeader>
-    <div class="status-strip">
-      <button v-for="item in statusCounts" :key="item.label" :class="{ active: status === item.status }"
-        @click="status = item.status">
-        <span>{{ item.label }}</span><strong>{{ item.value }}</strong>
+    <!-- <div class="status-strip">
+      <button v-for="(label, key) in pipelineFilterState" :key="key" :class="{ active: key === currentFilterPipelineState }"
+        @click="currentFilterPipelineState = key">
+        <span>{{ label }}</span>
       </button>
-    </div>
+    </div> -->
     <el-card shadow="never" class="table-card">
       <div class="toolbar">
-        <el-input v-model="search" clearable placeholder="搜索任务或项目" class="search-input"><template #prefix><el-icon>
+        <el-input v-model="pipelineQuery.query" clearable placeholder="搜索任务或项目" class="search-input"><template #prefix><el-icon>
               <Search />
             </el-icon></template></el-input>
-        <el-select v-model="status" style="width: 135px"><el-option
-            v-for="item in ['全部状态', '等待中', '运行中', '需要确认', '已完成', '失败']" :key="item" :label="item"
-            :value="item" /></el-select>
-        <el-select v-model="analysisType" style="width: 155px"><el-option
-            v-for="item in ['全部类型', '细菌全基因组', '病毒全基因组', 'SNP 联合分析']" :key="item" :label="item"
-            :value="item" /></el-select>
+        <el-select v-model="currentPipelineRunningStateSelection" style="width: 135px"><el-option
+            v-for="(label, status) in pipelineFilterStateSelections" :key="status" :label="label"
+            :value="status" /></el-select>
+        <el-select v-model="currentSelectedPipelineTypeSelection" style="width: 155px"><el-option
+            v-for="(typeName, typeCode) in pipelineTypeFilterSelections" :key="typeCode" :label="typeName"
+            :value="typeCode" /></el-select>
         <div class="spacer"></div>
-        <el-button><el-icon>
+        <!-- <el-button><el-icon>
             <Download />
-          </el-icon>导出</el-button><el-button><el-icon>
+          </el-icon>
+          导出
+        </el-button> -->
+        <el-button @click="loadPipelineState"><el-icon>
             <Refresh />
           </el-icon></el-button>
       </div>
@@ -195,29 +260,38 @@ function getPipelineProgress(pipelineState: PipelineState) {
           </template></el-table-column>
         <el-table-column prop="projectName" label="所属项目" min-width="180" show-overflow-tooltip />
         <el-table-column label="分析类型" min-width="135">
-          <template #default="{ row }">
-            {{ getAnalysisPipelineTypeName(row.pipelineType) }}
+          <template #default="{ row, $index }">
+            <template v-if="$index >= 0">
+              {{ getAnalysisPipelineTypeName(row.pipelineType) }}
+            </template>
           </template>
         </el-table-column>
         <el-table-column label="输入数据" width="115">
-          <template #default="{ row }">
-            {{ getPipelineInputsTypeName(row.pipelineInputs) }}
+          <template #default="{ row, $index }">
+            <template v-if="$index >= 0">
+              {{ getPipelineInputsTypeName(row) }}
+            </template>
+            
           </template>
         </el-table-column>
         <el-table-column label="状态" width="105"><template #default="{ row }">
-            <StatusTag :status="getPipelineDisplayStatus(row)" />
+            <StatusTag :status="pipelineDisplayStateMap.get(row.pipelineId)" />
           </template></el-table-column>
         <el-table-column label="当前运行阶段" min-width="180">
-          <template #default="{ row }">
-              
-            <strong>{{ getRunningStageNames(row) }}</strong>  
-            
+          <template #default="{ row, $index}">
+            <template v-if="$index >= 0">
+              <strong>{{ getRunningStageNames(row) }}</strong> 
+            </template>
           </template>
         </el-table-column>
 
         <el-table-column label="流水线进度" min-width="150">
-          <template #default="{row}">
-            <el-progress :percentage="Math.ceil(getPipelineProgress(row))"/>
+          <template #default="{row, $index}">
+
+            <template v-if="$index >= 0">
+              <el-progress :percentage="Math.ceil(getPipelineProgress(row))"/>
+            </template>
+            
           </template>
         </el-table-column>
         <el-table-column prop="createdAt" label="创建时间" width="110" />
@@ -229,7 +303,7 @@ function getPipelineProgress(pipelineState: PipelineState) {
                     divided>取消任务</el-dropdown-item></el-dropdown-menu></template></el-dropdown></template></el-table-column>
       </el-table>
       <div class="footer">
-        <span>已选择 0 项</span><el-pagination background layout="prev, pager, next" :total="pipelineStateList.length" :page-size="pipelineQuery.pageSize" />
+        <span>已选择 0 项</span><el-pagination v-model:current-page="pipelineQuery.page" background layout="prev, pager, next"  :total="pipelineStateList.length" :page-size="pipelineQuery.pageSize" />
       </div>
     </el-card>
   </div>

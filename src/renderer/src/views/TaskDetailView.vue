@@ -23,6 +23,8 @@ import { Graph, Selection } from '@antv/x6'
 import { getAnalysisPipelineTypeName } from '../common/analysisPipeline.js'
 import { prop } from '@antv/x6/lib/common/dom/prop.js'
 import { RAW_RESPONSE_STATUS_OK } from '../api/common.js'
+import { API_BASE_URL, backendAPI, backendService } from '../api/backendService.js'
+import { line } from '@antv/x6/lib/registry/port-layout/line.js'
 
 
 
@@ -108,7 +110,7 @@ Graph.registerNode(
 
 const props = defineProps<{
   pipelineId: number
-  
+
 }>()
 const emit = defineEmits(['back'])
 const activeTab = ref('pipeline')
@@ -137,7 +139,7 @@ interface StageNodeAppearance {
 
 
 interface Taxon {
-  taxId: number
+  taxid: number
   name: string
   score: number
 }
@@ -145,7 +147,7 @@ interface Taxon {
 interface TaxonomyOutput {
   status: number
   best: Taxon
-  candiates: Taxon[]
+  candidates: Taxon[]
 }
 
 interface StageResult {
@@ -308,11 +310,19 @@ function getStageResultDisplayName(outputKey, stageType) {
 function createStageResults(pipelineStage: AnalysisPipelineStage, stageResults: StageResult[]) {
 
 
+
+
+
   const stage = pipelineStage
+
+  if (stage.status !== analysisPipelineStageStatus.completed && stage.status !== analysisPipelineStageStatus.actionRequired) {
+    return
+  }
 
   let inlineOutput = null
 
-  if(stage.stageType === pipelineStageTypeCode.readInspect){
+
+  if (stage.stageType === pipelineStageTypeCode.readInspect) {
     return
   }
   else if (stage.stageType === pipelineStageTypeCode.taxonomy) {
@@ -331,7 +341,7 @@ function createStageResults(pipelineStage: AnalysisPipelineStage, stageResults: 
       }
 
 
-      
+
       stageResults.push({
         displayName: getStageResultDisplayName(key, stage.stageType),
         resultOutputName: url.substring(url.lastIndexOf("/") + 1),
@@ -389,10 +399,6 @@ watch(pipelineStages, (newStageList, oldStageList) => {
     let inlineOutput = null
     let output: StageResult[] = []
     pipelineStagesResultsMap.value.set(stage.stageId, output)
-
-    if (stage.status !== analysisPipelineStageStatus.completed) {
-      return
-    }
 
     createStageResults(stage, pipelineStagesResultsMap.value.get(stage.stageId))
   })
@@ -532,7 +538,7 @@ function initPipelineGraph() {
       console.log(stageType)
       const stage = pipelineStages.value.find((stage) => { return stage.stageType === Number(stageType) })
 
-      if(stage === undefined){
+      if (stage === undefined) {
         return
       }
 
@@ -540,7 +546,7 @@ function initPipelineGraph() {
         return dependency.some((dependencyStageType) => { return dependencyStageType === stage.stageType })
       }).map((stage) => { return stage.stageId })
 
-      
+
 
       dependencyByStageId.set(stage.stageId, dependencyStageIds)
 
@@ -667,7 +673,7 @@ function initPipelineGraph() {
 }
 
 
-async function downloadOutput(stageResult:StageResult){
+async function downloadOutput(stageResult: StageResult) {
   if (stageResult.downloading) {
     return
   }
@@ -680,19 +686,30 @@ async function downloadOutput(stageResult:StageResult){
   stageResult.downloading = true
 
   try {
-    await nextTick()
+    const fileBlob = await backendService.get<Blob, Blob>(
+      backendAPI.stageOutputDownload,
+      {
+        params: {
+          outputUrl: stageResult.resultOutputUrl
+        },
+        responseType: 'blob',
+        timeout: 0
+      }
+    )
 
-    const downloadLink = document.createElement('a')
-    downloadLink.href = stageResult.resultOutputUrl
-    downloadLink.download = stageResult.resultOutputName ?? ''
-    downloadLink.style.display = 'none'
+    const blobUrl = URL.createObjectURL(fileBlob)
+    const link = document.createElement('a')
 
-    document.body.appendChild(downloadLink)
-    downloadLink.click()
-    downloadLink.remove()
+    link.href = blobUrl
+    link.download = `${analysisPipeline.value.analysisPipelineName}_${stageResult.resultOutputName}`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(blobUrl)
+    ElMessage.success('文件下载完成')
   } catch (error) {
     console.error(error)
-    ElMessage.error('结果文件下载失败')
+    ElMessage.error('文件下载失败')
   } finally {
     stageResult.downloading = false
   }
@@ -724,7 +741,9 @@ const updateStages = (() => {
           curStage.status = newStage.status
           curStage.output = newStage.output
           updatePipelineStageNode(curStage)
+          updateStageResults(curStage)
         }
+
       })
 
 
@@ -828,7 +847,7 @@ async function loadPipelineAndStages() {
 
   // pipelineId = 1
 
-  console.log("pipeline id"+pipelineId)
+  console.log("pipeline id" + pipelineId)
 
 
   try {
@@ -922,7 +941,7 @@ function canShowResultOverview() {
 
 const currentTaxonomyOutput = computed<TaxonomyOutput | null>(() => {
   if (
-    currentFocusStage.value == null ||
+    currentFocusStage.value === null ||
     currentFocusStage.value.stageType !== pipelineStageTypeCode.taxonomy
   ) {
     return null
@@ -931,18 +950,19 @@ const currentTaxonomyOutput = computed<TaxonomyOutput | null>(() => {
   const taxonomyOutput =
     currentFocusStage.value.output.inline as Partial<TaxonomyOutput>
 
-  return taxonomyOutput.best ? taxonomyOutput as TaxonomyOutput : null
+  return taxonomyOutput
 })
 
 const taxonomyConfirmationViewList = ref<Taxon[]>([])
 
 watch(currentTaxonomyOutput, (newOutput, oldOutput) => {
 
-  if (newOutput === null || newOutput.candiates.length < 1) {
+
+  if (newOutput === null || newOutput === undefined || newOutput.candidates.length < 1) {
     taxonomyConfirmationViewList.value = []
     return
   }
-  newOutput.candiates?.forEach((taxon) => {
+  newOutput.candidates?.forEach((taxon) => {
     taxonomyConfirmationViewList.value.push(taxon)
   })
 })
@@ -967,7 +987,7 @@ async function comfirmTaxonomy() {
   isComfirmingTaxonomy.value = true
 
   try {
-    const response = await doComfirmTaxonomy(stage.stageId, selectedTaxon.taxId)
+    const response = await doComfirmTaxonomy(stage.stageId, selectedTaxon.taxid)
 
     response.status = RAW_RESPONSE_STATUS_OK
     if (response.status !== RAW_RESPONSE_STATUS_OK) {
@@ -1076,18 +1096,9 @@ onBeforeUnmount(() => {
           <div>
             <span>分析类型</span><strong>{{ getAnalysisPipelineTypeName(analysisPipeline.pipelineType) }}</strong>
           </div>
-          <!-- <div>
-            <span>任务名称</span><strong>{{ 'task.sample' }}</strong>
-          </div> -->
-          <!-- <div>
-            <span>输入数据</span><strong>{{ 'task.input' }}</strong>
-          </div> -->
           <div>
             <span>创建时间</span><strong>{{ analysisPipeline.createTime.toLocaleDateString() }}</strong>
           </div>
-          <!-- <div>
-          <span>运行时长</span><strong>{{ 'task.duration' }}</strong>
-        </div> -->
         </div>
       </div>
 
@@ -1118,7 +1129,7 @@ onBeforeUnmount(() => {
                 <div class="detail-pair">
                   <span>开启时间</span><strong>{{
                     currentFocusStage.startTime == null ? '--' : formatStartDate(currentFocusStage.startTime)
-                    }}</strong>
+                  }}</strong>
                 </div>
                 <el-divider />
 
@@ -1130,9 +1141,9 @@ onBeforeUnmount(() => {
                       <el-table-column prop="resultOutputName" label="文件名" />
                       <el-table-column label="操作" width="120" align="right">
                         <template #default="{ row }">
-                            <el-button type="primary" link :loading="row.downloading" @click="downloadOutput(row)">
-                              <span v-if="!row.downloading">下载</span>
-                            </el-button>
+                          <el-button type="primary" link :loading="row.downloading" @click="downloadOutput(row)">
+                            <span v-if="!row.downloading">下载</span>
+                          </el-button>
                         </template>
                       </el-table-column>
                     </el-table>
@@ -1146,20 +1157,20 @@ onBeforeUnmount(() => {
                           {{ currentTaxonomyOutput.best.name }}
                         </el-descriptions-item>
                         <el-descriptions-item label="Tax ID">
-                          {{ currentTaxonomyOutput.best.taxId }}
+                          {{ currentTaxonomyOutput.best.taxid }}
                         </el-descriptions-item>
                         <el-descriptions-item label="匹配评分">
                           {{ currentTaxonomyOutput.best.score }}
                         </el-descriptions-item>
                       </el-descriptions>
 
-                      <el-descriptions v-if="currentTaxonomyOutput.status === taxonomyResultStatusCode.userManul"
+                      <el-descriptions v-else-if="currentTaxonomyOutput.status === taxonomyResultStatusCode.userManul"
                         title="人工确认结果" :column="1" border size="small">
                         <el-descriptions-item label="物种名称">
                           {{ currentTaxonomyOutput.best.name }}
                         </el-descriptions-item>
                         <el-descriptions-item label="Tax ID">
-                          {{ currentTaxonomyOutput.best.taxId }}
+                          {{ currentTaxonomyOutput.best.taxid }}
                         </el-descriptions-item>
                       </el-descriptions>
 
@@ -1170,10 +1181,10 @@ onBeforeUnmount(() => {
                             :closable="false" show-icon />
                           <el-form label-position="top" style="margin-top: 16px">
                             <el-form-item label="确认物种">
-                              <el-select v-model="selectedComfirmationTaxon" value-key='taxId' clearable
+                              <el-select v-model="selectedComfirmationTaxon" value-key='taxid' clearable
                                 placeholder="选择候选物种或输入物种名称" style="width: 100%">
-                                <el-option v-for="taxon in taxonomyConfirmationViewList" :key="taxon.taxId"
-                                  :label="`${taxon.name}（Tax ID: ${taxon.taxId}）`" :value="taxon" />
+                                <el-option v-for="taxon in taxonomyConfirmationViewList" :key="taxon.taxid"
+                                  :label="`${taxon.name}（Tax ID: ${taxon.taxid}）`" :value="taxon" />
                               </el-select>
                             </el-form-item>
                           </el-form>
@@ -1191,9 +1202,9 @@ onBeforeUnmount(() => {
                       </div>
                       <el-divider content-position="center">候选物种</el-divider>
 
-                      <el-table :data="currentTaxonomyOutput.candiates" style="width: 100%">
+                      <el-table :data="currentTaxonomyOutput.candidates" style="width: 100%" max-height="500">
                         <el-table-column prop="name" label="物种名称" />
-                        <el-table-column prop="taxId" label="Tax ID" width="100" />
+                        <el-table-column prop="taxid" label="Tax ID" width="100" />
                         <el-table-column prop="score" label="匹配评分" width="100" />
                       </el-table>
                     </template>
@@ -1246,7 +1257,7 @@ onBeforeUnmount(() => {
               <el-table-column prop="size" label="大小" />
               <el-table-column prop="updatedAt" label="生成时间" /> -->
               <el-table-column label="操作">
-                <template #default="{row}">
+                <template #default="{ row }">
                   <el-button link type="primary" :loading="row.result.downloading" @click="downloadOutput(row.result)">
                     <span v-if="!row.result.downloading">下载</span>
                   </el-button>
@@ -1385,7 +1396,7 @@ onBeforeUnmount(() => {
 
 .pipeline-layout {
   display: grid;
-  grid-template-columns: minmax(680px, 1fr) 270px;
+  grid-template-columns: minmax(500px, 1fr) 400px;
   gap: 16px;
 }
 

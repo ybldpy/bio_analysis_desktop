@@ -24,7 +24,11 @@ export const backendAPI = {
   getPipeline: 'pipeline/getPipeline',
   getAllProjects: 'project/getAll',
   createProject: 'project/create',
-  pipelineNamePrefixCheck: 'pipeline/checkPipelineNamePrefixAvailable'
-
+  pipelineNamePrefixCheck: 'pipeline/checkPipelineNamePrefixAvailable',
+  batchCreatePipelines: 'pipeline/batchCreatePipelines',
+  pipelineInputFileUpload: 'pipelineInput/upload',
+  startPipeline: 'pipeline/start',
+  queryReferenceGenomes: 'referenceGenome/queryReferenceGenomes',
+  stageOutputDownload: '/stageOutput/download'
 }
 

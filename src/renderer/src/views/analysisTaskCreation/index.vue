@@ -5,6 +5,7 @@ import {
   analysisPipelineTypeCodes,
   canUseBatchPrefix,
   fetchReferenceGenomeList,
+  FetchReferenceGenomeResult,
   ReferenceGenome
 } from '../../api/analysisPipeline'
 import {
@@ -17,7 +18,7 @@ import {
   setTaskUploadRequest,
   type TaskUploadRequest
 } from './taskCreationCommon'
-import { RAW_RESPONSE_STATUS_OK } from '../../api/common'
+import { RAW_RESPONSE_STATUS_OK, RawResponse } from '../../api/common'
 
 const emit = defineEmits(['cancel', 'submitted', 'upload'])
 const activeSectionId = ref(0)
@@ -28,7 +29,7 @@ let taskSequence = 1
 
 
 interface UserTaskInputSlot {
-  r1: UploadUserFile[], 
+  r1: UploadUserFile[],
   r2: UploadUserFile[],
   assembly: UploadUserFile[]
   type: AnalysisTaskDataType
@@ -69,7 +70,7 @@ const sectionMap = {
   virusSpecificTypeSelection: 10,
   metagenomeSpecificTypeSelection: 11,
   referenceGenomeSelection: 2,
-  taskCreate: 3, 
+  taskCreate: 3,
   comfirmation: 4
 }
 
@@ -139,7 +140,7 @@ const onBatchNameChange = (() => {
       try {
         batchNamePrefixAvailable.value = 2
 
-        console.log("checking prefix "+ normalizedPrefix)
+        console.log("checking prefix " + normalizedPrefix)
         const canUseReponse = await canUseBatchPrefix(normalizedPrefix, analysisTasksBuildJob.projectId)
 
         // 旧请求的结果直接丢弃
@@ -147,15 +148,15 @@ const onBatchNameChange = (() => {
           return
         }
 
-        if (canUseReponse.status!==RAW_RESPONSE_STATUS_OK) {
+        if (canUseReponse.status !== RAW_RESPONSE_STATUS_OK) {
           ElMessage.error(canUseReponse.failMsg)
           batchNamePrefixAvailable.value = -1
           return
         }
 
-        if(canUseReponse.data){
+        if (canUseReponse.data) {
           batchNamePrefixAvailable.value = 0
-        }else {
+        } else {
           batchNamePrefixAvailable.value = 1
         }
 
@@ -202,7 +203,7 @@ const analysisTypes = {
     subtitle: 'Bacterial WGS',
     icon: 'DataAnalysis',
     color: '#167c6b',
-    desc: '质控、组装、物种鉴定、ANI、耐药、毒力及分型分析',
+    desc: '细菌全基因组分析流水线包含质量控制、组装、物种鉴定、耐药基因分析、毒力因子及MLST',
     code: analysisPipelineTypeCodes.regularBacteria
   },
   virus: {
@@ -211,13 +212,13 @@ const analysisTypes = {
     subtitle: 'Viral WGS',
     icon: 'Histogram',
     color: '#456fa8',
-    desc: '参考比对、变异检测、注释、一致性序列及系统发育分析',
+    desc: '病毒全基因组分析流水线包含质量控制, 参考基因组比对，变异性检测，一致性序列生成',
     specificTypes: {
       covid19: {
         id: 'sars-cov-2',
         title: '新型冠状病毒',
         subtitle: 'SARS-CoV-2',
-        desc: '新冠病毒全基因组分析, 额外添加SNP注释',
+        desc: '新冠病毒全基因组分析, 在病毒全基因组分析流水线基础上额外添加SNP注释',
         code: analysisPipelineTypeCodes.virusCovid
       },
       generalVirus: {
@@ -255,14 +256,14 @@ const analysisTypes = {
       },
       metagenomeshotgun: {
         id: 'metagenome-shotgun',
-        title: 'Shotgun 宏基因组',
+        title: 'Shotgun 宏基因组分析',
         subtitle: 'Shotgun Metagenomics',
         desc: '物种组成、功能基因、代谢通路、耐药基因及宏基因组组装分析',
         code: analysisPipelineTypeCodes.metagenomeShotgun
       }
     }
   }
-}
+} as const
 
 
 const pipelineTypeSelection = reactive({
@@ -275,14 +276,14 @@ const selectedTypeSelectionName = computed(() => {
   let specificTypeName = ''
 
   const type = Object.values(analysisTypes).find((type) => type.id === pipelineTypeSelection.typeId)
-  if(type === undefined){
+  if (type === undefined) {
     return {
       typeName: null,
       specificTypeName: null
     }
   }
 
-  if(!!type.specificTypes){
+  if (type.specificTypes === undefined || type.specificType == null) {
     return {
       typeName: type.title,
       specificTypeName: type.title
@@ -290,8 +291,8 @@ const selectedTypeSelectionName = computed(() => {
   }
 
   //ts-ignore
-  const specificType = Object.values(type.specificTypes).find((specificType) => {specificType.id === pipelineTypeSelection.specificTypeId})
-  if(!!specificType){
+  const specificType = Object.values(type.specificTypes).find((specificType) => { specificType.id === pipelineTypeSelection.specificTypeId })
+  if (!!specificType) {
     return {
       typeName: type.title,
       specificTypeName: "--"
@@ -308,9 +309,9 @@ const selectedTypeSelectionName = computed(() => {
 
 
 const selectedReference = ref<ReferenceGenome | null>(null)
-const selectedProject = computed<BioProject | null> (() => {
-  const project = projectList.value.find((project) => {return project.projectId === analysisTasksBuildJob.projectId})
-  if(project === undefined){
+const selectedProject = computed<BioProject | null>(() => {
+  const project = projectList.value.find((project) => { return project.pid === analysisTasksBuildJob.projectId })
+  if (project === undefined) {
     return null
   }
   return project
@@ -318,7 +319,7 @@ const selectedProject = computed<BioProject | null> (() => {
 
 const selectedReferenceLabel = computed(() =>
   selectedReference.value
-    ? `${selectedReference.value.accessions.join('、')} · ${selectedReference.value.speciesName}`
+    ? `${selectedReference.value.accessions.join('、')} · ${selectedReference.value.refseqName}`
     : '--'
 )
 const activeTask = computed(() => analysisTasksBuildJob.tasks[activeTaskIndex.value])
@@ -335,14 +336,24 @@ const referenceGenomePageInfoAtSearchCondition = reactive({
 
 async function loadReferenceGenomeList(query, pageIndex, pageSize) {
 
-  let fetchedReferenceGenomeResult = null;
+  let fetchedReferenceGenomeResponse: RawResponse<FetchReferenceGenomeResult> = null;
+  let fetchedReferenceGenomeResult: FetchReferenceGenomeResult = null;
   while (true) {
     const from = pageIndex * pageSize
-    fetchedReferenceGenomeResult = await fetchReferenceGenomeList(query, from, pageSize)
-    if (pageIndex * pageSize >= fetchedReferenceGenomeResult.totalRecords && fetchedReferenceGenomeResult.totalRecords > 0) {
+    fetchedReferenceGenomeResponse = await fetchReferenceGenomeList(query, from, pageSize)
+
+    if (fetchedReferenceGenomeResponse.status !== RAW_RESPONSE_STATUS_OK) {
+      ElMessage.error(fetchedReferenceGenomeResponse.failMsg)
+      return
+    }
+
+    fetchedReferenceGenomeResult = fetchedReferenceGenomeResponse.data
+
+    debugger
+    if (pageIndex * pageSize >= fetchedReferenceGenomeResult.total && fetchedReferenceGenomeResult.total > 0) {
       const maxPage = Math.max(
         1,
-        Math.ceil(fetchedReferenceGenomeResult.totalRecords / pageSize)
+        Math.ceil(fetchedReferenceGenomeResult.total / pageSize)
       )
       pageIndex = maxPage - 1
     } else {
@@ -350,7 +361,7 @@ async function loadReferenceGenomeList(query, pageIndex, pageSize) {
     }
   }
 
-  referenceGenomePageInfoAtSearchCondition.totalRecords = fetchedReferenceGenomeResult.totalRecords
+  referenceGenomePageInfoAtSearchCondition.totalRecords = fetchedReferenceGenomeResult.total
   referenceGenomePageInfoAtSearchCondition.page = pageIndex + 1
   referenceList.value = fetchedReferenceGenomeResult.referenceGenomes
 }
@@ -364,8 +375,8 @@ async function initProjectList() {
   try {
     const analysisProjectListResponse = await fetchProjectList()
 
-    if(analysisProjectListResponse.status !== RAW_RESPONSE_STATUS_OK){
-      ElMessage.error('项目列表加载失败'+analysisProjectListResponse.failMsg)
+    if (analysisProjectListResponse.status !== RAW_RESPONSE_STATUS_OK) {
+      ElMessage.error('项目列表加载失败' + analysisProjectListResponse.failMsg)
     }
 
     debugger
@@ -425,8 +436,8 @@ function automaticTaskName(index) {
 }
 
 function displayTaskName(task, index) {
-  if (!batchNamePrefix.value.trim()){
-    return `未命名任务 ${index+1}`
+  if (!batchNamePrefix.value.trim()) {
+    return `未命名任务 ${index + 1}`
   }
 
   return task.name
@@ -439,9 +450,9 @@ function selectReference(reference: ReferenceGenome) {
 
 function doCheckForBuildJobBeforeConfirmation() {
 
-  if(!batchNamePrefix?.value.trim()){
+  if (!batchNamePrefix?.value.trim()) {
     return {
-      satisfied: false, 
+      satisfied: false,
       msg: '未给任务命名'
     }
   }
@@ -483,7 +494,7 @@ function checkCurrentSectionSatisfied(currentSectionId) {
   let satisfied = true
   let msg = ''
   if (currentSectionId === sectionMap.projectAndAnalysisTypeSelection) {
-    satisfied = !!analysisTasksBuildJob.projectId && !!pipelineTypeSelection.typeId
+    satisfied = selectedProject.value !== null && pipelineTypeSelection.typeId !== null
     msg = '请选择项目和分析任务类型'
   } else if (currentSectionId === sectionMap.referenceGenomeSelection) {
     satisfied = !!selectedReference.value
@@ -491,7 +502,8 @@ function checkCurrentSectionSatisfied(currentSectionId) {
   } else if (currentSectionId === sectionMap.virusSpecificTypeSelection || currentSectionId === sectionMap.metagenomeSpecificTypeSelection) {
     satisfied = !!pipelineTypeSelection.specificTypeId
     msg = '请选择具体类型'
-  } else if (currentSectionId === sectionMap.taskCreate) {
+  }
+  else if (currentSectionId === sectionMap.taskCreate) {
     return doCheckForBuildJobBeforeConfirmation()
   }
 
@@ -528,7 +540,7 @@ function calculateNextSectionId(currentSectionId) {
     return sectionMap.taskCreate
   }
 
-  if(currentSectionId === sectionMap.taskCreate){
+  if (currentSectionId === sectionMap.taskCreate) {
     return sectionMap.comfirmation
   }
 
@@ -591,7 +603,7 @@ const uploadProps = {
   limit: 1
 }
 
-function replaceWithNewFile(files, uploadInstance: UploadInstance){
+function replaceWithNewFile(files, uploadInstance: UploadInstance) {
 
   uploadInstance.clearFiles()
 
@@ -625,7 +637,7 @@ async function doReferenceGenomeSearch() {
 
   referenceListLoading.value = true
   try {
-    await loadReferenceGenomeList(referenceGenomePageInfoAtSearchCondition.search, 1, referenceGenomePageInfoAtSearchCondition.pageSize)
+    await loadReferenceGenomeList(referenceGenomePageInfoAtSearchCondition.search, referenceGenomePageInfoAtSearchCondition.page-1, referenceGenomePageInfoAtSearchCondition.pageSize)
   } catch (error) {
     console.error(error)
     ElMessage.error('加载参考基因组列表失败')
@@ -637,7 +649,8 @@ async function doReferenceGenomeSearch() {
 
 onBeforeMount(() => {
   initProjectList()
-  loadReferenceGenomeList('', 0, referenceGenomePageInfoAtSearchCondition.pageSize)
+  // loadReferenceGenomeList('', 0, referenceGenomePageInfoAtSearchCondition.pageSize)
+  doReferenceGenomeSearch()
 })
 
 function calculateActiveStep() {
@@ -662,7 +675,7 @@ function hasNextSection() {
   return sectionMap.comfirmation !== activeSectionId.value
 }
 
-function selectAnalysisType(id:string) {
+function selectAnalysisType(id: string) {
   pipelineTypeSelection.typeId = id
 }
 
@@ -733,18 +746,20 @@ function selectSpeceficType(speceficTypeId) {
         </div>
       </div>
 
-      <div v-else-if="activeSectionId === sectionMap.virusSpecificTypeSelection"
+      <div v-else-if="activeSectionId === sectionMap.virusSpecificTypeSelection || activeSectionId === sectionMap.metagenomeSpecificTypeSelection"
         class="step-content virusSpecificTypeSelection">
         <div class="section-heading">
-          <div>
+          <div v-if="activeSectionId === sectionMap.virusSpecificTypeSelection">
             <h2>选择病毒分析流程</h2>
             <p>根据样本类型选择新冠病毒专项分析或常规病毒全基因组分析</p>
           </div>
+          <div v-else>
+            <h2>选择宏基因分析类型</h2>
+          </div>
         </div>
 
-
         <div class="type-grid">
-          <button v-for="(specificType, typeId) in analysisTypes.virus.specificTypes" :key="typeId" type="button"
+          <button v-for="(specificType, typeId) in activeSectionId === sectionMap.virusSpecificTypeSelection ? analysisTypes.virus.specificTypes:analysisTypes.metagenome.specificTypes" :key="typeId" type="button"
             :class="[
               'type-card',
               {
@@ -771,6 +786,21 @@ function selectSpeceficType(speceficTypeId) {
         </div>
       </div>
 
+      <!-- <div v-else-if="activeSectionId === sectionMap.metagenomeSpecificTypeSelection" class="step-content">
+
+        <div class="section-heading">
+          <div>
+            <h2>选择宏基因分析流程</h2>
+          </div>
+        </div>
+
+        <div class="type-grid">
+          <button type="button" :class="['type-card'], {selected: }">
+
+          </button>
+        </div>
+      </div> -->
+
 
 
       <div v-else-if="activeSectionId === sectionMap.referenceGenomeSelection" class="step-content">
@@ -784,14 +814,26 @@ function selectSpeceficType(speceficTypeId) {
 
         <div class="reference-browser">
           <div class="reference-toolbar">
-            <el-input v-model="referenceGenomePageInfoAtSearchCondition.search" clearable placeholder="搜索物种名称、Tax ID"
-              @@keyup.enter="doReferenceGenomeSearch">
+            <el-input v-model="referenceGenomePageInfoAtSearchCondition.search" clearable placeholder="输入Tax ID搜索"
+              @keyup.enter="doReferenceGenomeSearch">
               <template #prefix>
                 <el-icon>
                   <Search />
                 </el-icon>
               </template>
             </el-input>
+            <el-tooltip content="刷新参考基因组列表" placement="top">
+              <el-button
+                text
+                circle
+                :loading="referenceListLoading"
+                @click="doReferenceGenomeSearch"
+              >
+                <el-icon v-if="!referenceListLoading">
+                  <Refresh />
+                </el-icon>
+              </el-button>
+            </el-tooltip>
             <!-- <span>共 {{ filteredReferenceGenomes.length }} 条参考基因组</span> -->
           </div>
 
@@ -806,11 +848,14 @@ function selectSpeceficType(speceficTypeId) {
               <el-table-column label="Accession" min-width="145">
                 <template #default="{ row }">{{ row.accessions.join('、') }}</template>
               </el-table-column>
-              <el-table-column prop="speciesName" label="物种" min-width="230" />
+              <el-table-column prop="refseqName" label="物种" min-width="230" />
               <el-table-column prop="taxId" label="Tax ID" width="110" />
-              <el-table-column prop="sourceDB" label="来源" width="120" />
-              <el-table-column prop="meta.genomeLength" label="基因组长度" width="110" />
-              <el-table-column prop="meta.version" label="版本" width="75" />
+              <el-table-column prop="sourceDb" label="来源" width="120" />
+              <!-- <el-table-column label="类型">
+
+              </el-table-column> -->
+              <!-- <el-table-column prop="meta.genomeLength" label="基因组长度" width="110" />
+              <el-table-column prop="meta.version" label="版本" width="75" /> -->
             </el-table>
 
             <div class="reference-pagination">
@@ -897,7 +942,7 @@ function selectSpeceficType(speceficTypeId) {
                   <!-- <span v-else-if="batchNamePrefixAvailable === 0">
                     前缀可以使用
                   </span> -->
-                  <span v-else-if = 'batchNamePrefixAvailable === 1'>该前缀已在当前项目中使用，请更换</span>
+                  <span v-else-if='batchNamePrefixAvailable === 1'>该前缀已在当前项目中使用，请更换</span>
                 </div>
               </div>
             </el-form-item>
@@ -947,7 +992,7 @@ function selectSpeceficType(speceficTypeId) {
                   { 0: '双端 FASTQ', 1: '单端 FASTQ', 2: 'Contigs FASTA' }[
                   item.inputSlots[0].type
                   ]
-                  }}</small>
+                }}</small>
               </span>
               <el-icon v-if="false" class="task-valid">
                 <CircleCheckFilled />
@@ -964,7 +1009,7 @@ function selectSpeceficType(speceficTypeId) {
             <div class="editor-heading">
               <div>
                 <span>任务 {{ activeTaskIndex + 1 }}</span><strong>{{ displayTaskName(activeTask, activeTaskIndex)
-                }}</strong>
+                  }}</strong>
               </div>
               <div>
                 <el-tooltip content="删除当前任务">
@@ -997,14 +1042,16 @@ function selectSpeceficType(speceficTypeId) {
               <el-radio-button :value='2'>已组装 Contigs</el-radio-button>
             </el-radio-group>
             <div v-if="activeTask.inputSlots[0].type === 0" class="upload-grid">
-              <el-upload ref="r1UploadRef" v-model:file-list="activeTask.inputSlots[0].r1" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, r1UploadRef)}">
+              <el-upload ref="r1UploadRef" v-model:file-list="activeTask.inputSlots[0].r1" drag v-bind="uploadProps"
+                :on-exceed="(files) => { replaceWithNewFile(files, r1UploadRef) }">
                 <el-icon class="upload-icon">
                   <UploadFilled />
                 </el-icon>
                 <div class="upload-title">上传 R1 文件</div>
                 <div class="upload-tip">正向 reads，支持 .fastq / .fq / .gz</div>
               </el-upload>
-              <el-upload ref="r2UploadRef" v-model:file-list="activeTask.inputSlots[0].r2" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, r2UploadRef)}">
+              <el-upload ref="r2UploadRef" v-model:file-list="activeTask.inputSlots[0].r2" drag v-bind="uploadProps"
+                :on-exceed="(files) => { replaceWithNewFile(files, r2UploadRef) }">
                 <el-icon class="upload-icon">
                   <UploadFilled />
                 </el-icon>
@@ -1013,33 +1060,36 @@ function selectSpeceficType(speceficTypeId) {
               </el-upload>
             </div>
             <div v-else-if="activeTask.inputSlots[0].type === 1" class="upload-single">
-              <el-upload ref="r1UploadRef" v-model:file-list="activeTask.inputSlots[0].r1" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, r1UploadRef)}">
+              <el-upload ref="r1UploadRef" v-model:file-list="activeTask.inputSlots[0].r1" drag v-bind="uploadProps"
+                :on-exceed="(files) => { replaceWithNewFile(files, r1UploadRef) }">
                 <el-icon class="upload-icon">
                   <UploadFilled />
                 </el-icon>
                 <div class="upload-title">
                   {{
-                      '上传单端 FASTQ 文件'
+                    '上传单端 FASTQ 文件'
                   }}
                 </div>
                 <div class="upload-tip">拖拽文件到此处，或点击选择文件</div>
               </el-upload>
             </div>
             <div v-else class="upload-single">
-              <el-upload ref="contigUploadRef" v-model:file-list="activeTask.inputSlots[0].assembly" drag v-bind="uploadProps" :on-exceed="(files) => {replaceWithNewFile(files, contigUploadRef)}">
+              <el-upload ref="contigUploadRef" v-model:file-list="activeTask.inputSlots[0].assembly" drag
+                v-bind="uploadProps" :on-exceed="(files) => { replaceWithNewFile(files, contigUploadRef) }">
                 <el-icon class="upload-icon">
                   <UploadFilled />
                 </el-icon>
                 <div class="upload-title">
                   {{
-                      '上传contigs/assembly FASTA文件'
+                    '上传contigs/assembly FASTA文件'
                   }}
                 </div>
                 <div class="upload-tip">拖拽文件到此处，或点击选择文件</div>
               </el-upload>
             </div>
-            <el-alert v-if="activeTask.inputSlots[0].type === 2 && pipelineTypeSelection.typeId === analysisTypes.virus.id" title="使用已组装数据时，系统将只使用参考基因组进行序列比较" type="info"
-              :closable="false" show-icon />
+            <el-alert
+              v-if="activeTask.inputSlots[0].type === 2 && pipelineTypeSelection.typeId === analysisTypes.virus.id"
+              title="使用已组装数据时，系统将只使用参考基因组进行序列比较" type="info" :closable="false" show-icon />
           </section>
         </div>
       </div>
@@ -1060,8 +1110,10 @@ function selectSpeceficType(speceficTypeId) {
           </el-descriptions-item>
           <el-descriptions-item label="任务名称前缀">{{ batchNamePrefix }}</el-descriptions-item>
           <el-descriptions-item label="任务数量">{{ analysisTasksBuildJob.tasks.length }} 个</el-descriptions-item>
-          <el-descriptions-item v-if="pipelineTypeSelection.typeId === analysisTypes.virus.id && pipelineTypeSelection.specificTypeId === analysisTypes.virus.specificTypes.generalVirus.id" label="参考基因组">
-            {{ selectedReference.speciesName }}
+          <el-descriptions-item
+            v-if="pipelineTypeSelection.typeId === analysisTypes.virus.id && pipelineTypeSelection.specificTypeId === analysisTypes.virus.specificTypes.generalVirus.id"
+            label="参考基因组">
+            {{ selectedReference.refseqName }}
           </el-descriptions-item>
         </el-descriptions>
         <div class="confirm-list">
@@ -1083,7 +1135,7 @@ function selectSpeceficType(speceficTypeId) {
               <template #default="{ row }">
                 {{
                   { 0: '双端测序 FASTQ', 1: '单端测序 FASTQ', 2: '已组装 Contigs' }[
-                  row.type
+                  row.inputSlots[0].type
                   ]
                 }}
               </template>

@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
     requestBuildAnalysisTasks,
+    requestStartPipeline,
     type CreatedAnalysisTask
 } from '../../api/analysisPipeline'
 import {
@@ -10,7 +11,8 @@ import {
     SEQUENCE_LEVEL_ASSEMBLY,
     SEQUENCE_LEVEL_READ,
     doUploadAnalysisTaskInput,
-    uploadAnalysisTaskInputResonseCode} from '../../api/analysisPipeline'
+    uploadAnalysisTaskInputResonseCode
+} from '../../api/analysisPipeline'
 import {
     takeTaskUploadRequest,
     type AnalysisTask,
@@ -34,6 +36,8 @@ type TaskUploadStatus =
     | 'uploading'
     | 'success'
     | 'failed'
+    | 'starting'
+    | 'startFailed'
 
 
 interface UploadFile {
@@ -110,7 +114,7 @@ const referenceGenome =
 const isWorking = computed(
     () =>
         phase.value === 'creating' ||
-        phase.value === 'uploading'
+        tasks.some((task)=>{return task.status === 'starting' || task.status === 'uploading'})
 )
 
 const completedTaskCount = computed(
@@ -121,7 +125,7 @@ const completedTaskCount = computed(
 
 const failedTaskCount = computed(
     () =>
-        tasks.filter((task) => task.status === 'failed')
+        tasks.filter((task) => task.status === 'failed' || task.status === 'startFailed')
             .length
 )
 
@@ -157,8 +161,10 @@ function getStatusLabel(status: TaskUploadStatus): string {
     const labels: Record<TaskUploadStatus, string> = {
         waiting: '等待上传',
         uploading: '正在上传',
+        starting: '正在启动',
         success: '上传成功',
-        failed: '上传失败'
+        failed: '上传失败',
+        startFailed: '启动失败'
     }
 
     return labels[status]
@@ -174,7 +180,9 @@ function getStatusType(
         waiting: 'info',
         uploading: 'warning',
         success: 'success',
-        failed: 'danger'
+        failed: 'danger',
+        startFailed: 'danger',
+        starting: 'warning'
     }
 
     return types[status]
@@ -203,10 +211,11 @@ function getErrorMessage(error: unknown): string {
 }
 
 function bindCreatedTaskIds(
-    createdTasks: CreatedAnalysisTask[]
+    taskIds: number[]
 ): void {
     tasks.forEach((task, index) => {
-        task.taskAssingedId = createdTasks[index].id
+        debugger
+        task.taskAssingedId = taskIds[index]
     })
 }
 
@@ -222,18 +231,21 @@ async function createTasks(): Promise<boolean> {
     try {
         const response = await requestBuildAnalysisTasks(
             taskUploadRequest.tasks,
-            taskUploadRequest.project.projectId,
+            taskUploadRequest.project.pid,
             taskUploadRequest.analysisType,
             taskUploadRequest.referenceGenome?.refId ?? null
         )
 
-        if (!response.success) {
+        if (response.status !== RAW_RESPONSE_STATUS_OK) {
             phase.value = 'creation-failed'
-            creationErrorMessage.value = response.message
+            creationErrorMessage.value = response.failMsg
+            ElMessage.error(response.failMsg)
             return false
         }
 
-        bindCreatedTaskIds(response.nameIdList)
+
+
+        bindCreatedTaskIds(response.data)
 
         phase.value = 'uploading'
         return true
@@ -262,7 +274,7 @@ function getFileUploadKey(slotIndex, location) {
     return `sample/${slotIndex}/${location}`
 }
 
-async function uploadTask(
+async function uploadTaskInput(
     task: TaskUploadItem
 ): Promise<void> {
 
@@ -305,7 +317,6 @@ async function uploadTask(
             })
             uploadFileList.push(slot.assembly)
         }
-
         const requestPromiseList = uploadRequests.map((request) => {
             return doUploadAnalysisTaskInput(request)
         })
@@ -344,7 +355,7 @@ async function uploadTask(
                 }
             }
         })
-        task.status = allSuccess ? 'success' : 'failed'
+        task.status = allSuccess ? 'starting' : 'failed'
         if (pipelineNotExist) {
             task.errorMessage = '分析任务不存在'
             task.retryable = false
@@ -355,12 +366,23 @@ async function uploadTask(
             }
             task.errorMessage = '上传失败，请重试'
         }
-
+        if (task.status === 'starting') {
+            await startPipeline(task)
+            tryUpdatePhaseValueToCompleted()
+        }
     } catch (error) {
         console.error(error)
         task.status = 'failed'
         task.errorMessage = getErrorMessage(error)
     }
+}
+
+function tryUpdatePhaseValueToCompleted() {
+
+    if (phase.value !== 'uploading' || !tasks.every((task) => { return task.status === 'success' })) { return; }
+
+    phase.value = 'completed'
+
 }
 
 async function uploadTasks(
@@ -395,7 +417,7 @@ async function uploadTasks(
             index++, addedToBatchCount++
         ) {
             const task = uploadTaskList[index]
-            const promise = uploadTask(task)
+            const promise = uploadTaskInput(task)
 
             uploadingList.push(promise)
             inBatchTaskList.push(task)
@@ -437,12 +459,11 @@ async function uploadTasks(
 
     // 等待最后一批仍在上传的任务结束
     await Promise.allSettled(uploadingList)
-
-    phase.value = 'completed'
+    tryUpdatePhaseValueToCompleted()
 }
 
 async function startUploadWorkflow(): Promise<void> {
-    if (phase.value === 'ready') {
+    if (phase.value === 'ready' || phase.value === 'creation-failed') {
         const created = await createTasks()
         if (!created) {
             return
@@ -452,14 +473,52 @@ async function startUploadWorkflow(): Promise<void> {
     await uploadTasks(tasks)
 }
 
+async function startPipeline(pipeline: TaskUploadItem) {
+
+    try {
+        const response = await requestStartPipeline(pipeline.taskAssingedId);
+        if (response.status === RAW_RESPONSE_STATUS_OK || response.status === 200) {
+            pipeline.status = 'success'
+            return
+        }
+
+        if (response.status === RAW_RESPONSE_STATUS_DUPLICATE_OPERATION) {
+            return
+        }
+
+        let retryable = true
+        let status: TaskUploadStatus = 'startFailed'
+
+        if (response.status === 404) {
+            retryable = false
+            ElMessage.error(`分析流水线 ${pipeline.taskName} 不存在`);
+            pipeline.errorMessage = response.failMsg;
+        }
+
+        if (response.status === RAW_RESPONSE_STATUS_BUSINESS_FAIL) {
+            retryable = false
+            ElMessage.error(response.failMsg);
+            pipeline.errorMessage = response.failMsg
+        }
+        if (response.status === RAW_RESPONSE_STATUS_INTERNAL_FAIL) {
+            ElMessage.error(response.failMsg)
+            pipeline.errorMessage = response.failMsg
+        }
+        pipeline.retryable = retryable
+        pipeline.status = status
+    } catch (error) {
+        ElMessage.error(`分析流水线 ${pipeline.taskName} 启动失败`)
+        pipeline.status = 'startFailed'
+        pipeline.errorMessage = '启动失败，请稍后重试'
+
+    }
+}
+
 async function retryCreation(): Promise<void> {
     tasks.forEach((item) => {
         item.status = 'waiting'
         item.errorMessage = ''
     })
-
-
-
     startUploadWorkflow()
 }
 
@@ -467,14 +526,22 @@ async function retryTask(
     item: TaskUploadItem
 ): Promise<void> {
     phase.value = 'uploading'
-    await uploadTask(item)
-    phase.value = 'completed'
+
+    if (item.status === 'failed') {
+        await uploadTaskInput(item)
+    } else {
+        item.status = 'starting'
+        await startPipeline(item)
+    }
+    tryUpdatePhaseValueToCompleted()
+
+
 }
 
 async function retryFailedTasks(): Promise<void> {
     const failedTasks = tasks.filter(
         (item) =>
-            item.status === 'failed' && item.retryable
+            (item.status === 'failed' || item.status === 'startFailed') && item.retryable
     )
 
     await uploadTasks(failedTasks)
@@ -490,10 +557,10 @@ onMounted(() => {
 const taskListView = computed(() => {
 
     const viewTaskList = tasks.filter((task) => {
-        return task.status === 'failed'
+        return task.status === 'failed' || task.status === 'startFailed'
     })
 
-    const normalTaskList = tasks.filter((task) => {return task.status !== 'failed'})
+    const normalTaskList = tasks.filter((task) => { return task.status !== 'failed' && task.status!=='startFailed' })
     viewTaskList.push(...normalTaskList)
     return viewTaskList
 
@@ -627,8 +694,7 @@ const taskListView = computed(() => {
                     <el-table-column label="操作" width="90" fixed="right">
                         <template #default="{ row }">
                             <el-button v-if="
-                                phase === 'completed' &&
-                                row.status === 'failed'
+                                (row.status === 'failed' || row.status === 'startFailed') && row.retryable
                             " link type="primary" @click="retryTask(row)">
                                 重试
                             </el-button>
@@ -656,8 +722,7 @@ const taskListView = computed(() => {
                 <el-button v-if="
                     phase === 'completed' ||
                     phase === 'creation-failed'
-                " :type="phase === 'completed' &&
-                    failedTaskCount === 0
+                " :type="phase === 'completed'
                     ? 'primary'
                     : 'default'
                     " @click="emit('submitted')">
