@@ -1,0 +1,10 @@
+{
+  "success": false,
+  "assertions": 0,
+  "confirmations": 0,
+  "downloads": 0,
+  "requests": [],
+  "screenshots": [],
+  "rendererErrors": [],
+  "error": "Renderer gone: launch-failed"
+}

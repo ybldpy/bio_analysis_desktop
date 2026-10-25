@@ -1,24 +1,27 @@
 <script setup lang="ts">
-import { computed, onBeforeMount, reactive, Ref, ref, watch } from 'vue'
+import { computed, onBeforeMount, onScopeDispose, reactive, ref, watch } from 'vue'
+import { isAxiosError } from 'axios'
 import { ElMessage, genFileId, UploadInstance, UploadProps, UploadRawFile, UploadUserFile } from 'element-plus'
 import {
   analysisPipelineTypeCodes,
   canUseBatchPrefix,
-  fetchReferenceGenomeList,
-  FetchReferenceGenomeResult,
-  ReferenceGenome
+  fetchVirusTargets,
+  type SequencingPlatform,
+  type VirusTarget
 } from '../../api/analysisPipeline'
 import {
   fetchProjectList,
   BioProject
 } from '../../api/bioProject'
 import {
-  AnalysisTask,
   AnalysisTaskDataType,
   setTaskUploadRequest,
   type TaskUploadRequest
 } from './taskCreationCommon'
-import { RAW_RESPONSE_STATUS_OK, RawResponse } from '../../api/common'
+import { RAW_RESPONSE_STATUS_OK } from '../../api/common'
+import { prepareBatchFileImport } from './batchFileImport'
+import TaskReferenceSelection from '../../components/referenceLibrary/TaskReferenceSelection.vue'
+import { useTaskReferenceSelection } from '../../composables/useTaskReferenceSelection'
 
 const emit = defineEmits(['cancel', 'submitted', 'upload'])
 const activeSectionId = ref(0)
@@ -45,18 +48,48 @@ interface UserCreateAnalysisTask {
 interface AnalysisTasksBuildJob {
   projectId: number | null,
   analysisPipelineTypeCode: number | null
-  referenceGenomeId: number | null,
+  taxId: number | null,
   customerReferenceGenome: UploadUserFile[],
+  sequencingPlatform: SequencingPlatform,
   tasks: UserCreateAnalysisTask[]
 }
 
 
+
+const sequencingPlatformOptions: { label: string; value: SequencingPlatform }[] = [
+  { label: '未知（自动识别）', value: 0 },
+  { label: 'Illumina', value: 1001 },
+  { label: '华大智造 MGI / DNBSEQ', value: 1002 },
+  { label: 'Oxford Nanopore（ONT）', value: 2001 },
+  { label: 'PacBio', value: 2002 }
+]
 
 const batchNamePrefix = ref('')
 
 const r1UploadRef = ref<UploadInstance>(null)
 const r2UploadRef = ref<UploadInstance>(null)
 const contigUploadRef = ref<UploadInstance>(null)
+const batchFilesInput = ref<HTMLInputElement | null>(null)
+const batchDirectoryInput = ref<HTMLInputElement | null>(null)
+const batchImportSummary = ref<{
+  paired: number
+  single: number
+  ignored: number
+  ambiguous: number
+  skippedSubdirectoryFiles: number
+} | null>(null)
+
+const batchImportMessage = computed(() => {
+  const summary = batchImportSummary.value
+  if (!summary) return ''
+
+  const messages = [`本次导入：${summary.paired} 个双端任务，${summary.single} 个单端任务。`]
+  if (summary.single) messages.push('未能唯一配对的 FASTQ 已按单端导入，请检查文件分配。')
+  if (summary.ambiguous) messages.push(`其中 ${summary.ambiguous} 个文件存在多个配对候选，未自动配对。`)
+  if (summary.ignored) messages.push(`已忽略 ${summary.ignored} 个非 FASTQ 文件。`)
+  if (summary.skippedSubdirectoryFiles) messages.push(`已忽略子目录中的 ${summary.skippedSubdirectoryFiles} 个文件，仅导入当前目录直属文件。`)
+  return messages.join(' ')
+})
 
 
 watch(batchNamePrefix, (newBatchName) => {
@@ -67,27 +100,24 @@ watch(batchNamePrefix, (newBatchName) => {
 
 const sectionMap = {
   projectAndAnalysisTypeSelection: 0,
-  virusSpecificTypeSelection: 10,
   metagenomeSpecificTypeSelection: 11,
-  referenceGenomeSelection: 2,
+  virusTargetSelection: 2,
   taskCreate: 3,
   comfirmation: 4
 }
 
 const analysisTasksBuildJob: AnalysisTasksBuildJob = reactive({
-  referenceGenomeId: computed(() => {
-    if (!selectedReference.value) {
-      return null
-    }
-    return selectedReference.value.refId
-  }),
+  taxId: computed(() => isVirusAnalysis.value ? selectedVirusTarget.value?.taxId ?? null : null),
   projectId: null,
   analysisPipelineTypeCode: computed(() => {
+    if (isVirusAnalysis.value) {
+      return selectedVirusTarget.value?.pipelineType ?? null
+    }
     for (const item of Object.values(analysisTypes)) {
       if (item.id === pipelineTypeSelection.typeId) {
-        if (item.code !== undefined && item.code !== null && Number.isInteger(item.code)) {
+        if ('code' in item) {
           return item.code
-        } else if (item.specificTypes !== undefined && item.specificTypes !== null) {
+        } else if ('specificTypes' in item) {
           for (const specificType of Object.values(item.specificTypes)) {
             if (specificType.id === pipelineTypeSelection.specificTypeId) {
               return specificType.code
@@ -99,12 +129,19 @@ const analysisTasksBuildJob: AnalysisTasksBuildJob = reactive({
     }
     return null
   }),
+  sequencingPlatform: 0,
   tasks: []
 })
 
+const sequencingPlatformLabel = computed(() =>
+  sequencingPlatformOptions.find(
+    (option) => option.value === analysisTasksBuildJob.sequencingPlatform
+  )?.label ?? '未知（自动识别）'
+)
+
 
 const analysisTaskViewKeysMap = new WeakMap()
-function getAnalysisTaskViewKey(task: AnalysisTask) {
+function getAnalysisTaskViewKey(task: UserCreateAnalysisTask) {
 
   const existingKey = analysisTaskViewKeysMap.get(task)
 
@@ -212,23 +249,7 @@ const analysisTypes = {
     subtitle: 'Viral WGS',
     icon: 'Histogram',
     color: '#456fa8',
-    desc: '病毒全基因组分析流水线包含质量控制, 参考基因组比对，变异性检测，一致性序列生成',
-    specificTypes: {
-      covid19: {
-        id: 'sars-cov-2',
-        title: '新型冠状病毒',
-        subtitle: 'SARS-CoV-2',
-        desc: '新冠病毒全基因组分析, 在病毒全基因组分析流水线基础上额外添加SNP注释',
-        code: analysisPipelineTypeCodes.virusCovid
-      },
-      generalVirus: {
-        id: 'general-virus-wgs',
-        title: '常规病毒',
-        subtitle: 'General Viral WGS',
-        desc: '适用于新冠病毒以外的常规病毒全基因组分析',
-        code: analysisPipelineTypeCodes.regularVirus
-      }
-    }
+    desc: '选择分析目标后，由系统加载候选参考并选择使用的参考；支持新冠及常规病毒分析'
   },
   snp: {
     id: 'snp',
@@ -271,44 +292,142 @@ const pipelineTypeSelection = reactive({
   specificTypeId: null
 })
 
+const isVirusAnalysis = computed(() => pipelineTypeSelection.typeId === analysisTypes.virus.id)
+const virusTargets = ref<VirusTarget[]>([])
+const selectedVirusTargetKey = ref<string | null>(null)
+const virusTargetsLoading = ref(false)
+const virusTargetsLoaded = ref(false)
+const virusTargetsError = ref('')
+const virusTargetSearch = ref('')
+const virusTargetPage = ref(1)
+const virusTargetPageSize = 12
+let virusTargetsRequestId = 0
+
+function getVirusTargetKey(target: VirusTarget): string {
+  return `${target.pipelineType}:${target.taxId}`
+}
+
+const selectedVirusTarget = computed(() =>
+  virusTargets.value.find((target) => getVirusTargetKey(target) === selectedVirusTargetKey.value) ?? null
+)
+const virusTargetSelectionReady = computed(() =>
+  virusTargetsLoaded.value &&
+  !virusTargetsLoading.value &&
+  !virusTargetsError.value &&
+  selectedVirusTarget.value !== null
+)
+const {
+  candidates: referenceCandidates,
+  selectedIds: enabledReferenceIds,
+  loading: referenceCandidatesLoading,
+  loaded: referenceCandidatesLoaded,
+  error: referenceCandidatesError,
+  ready: referenceSelectionReady,
+  validationMessage: referenceSelectionMessage,
+  missingSelectedIds,
+  setTarget: setReferenceTarget,
+  refresh: refreshReferenceCandidates,
+  setSelected: setReferenceSelected,
+  selectAll: selectAllReferences,
+  clearSelection: clearReferenceSelection,
+  removeUnavailableSelection
+} = useTaskReferenceSelection()
+
+watch(
+  () => isVirusAnalysis.value && selectedVirusTarget.value
+    ? getVirusTargetKey(selectedVirusTarget.value)
+    : null,
+  () => { void setReferenceTarget(isVirusAnalysis.value ? selectedVirusTarget.value : null) },
+  { flush: 'sync' }
+)
+onScopeDispose(() => { virusTargetsRequestId++ })
+
+const filteredVirusTargets = computed(() => {
+  const query = virusTargetSearch.value.trim().toLowerCase()
+  return virusTargets.value.filter((target) =>
+    target.label.toLowerCase().includes(query) || String(target.taxId).includes(query)
+  )
+})
+const pagedVirusTargets = computed(() => {
+  const start = (virusTargetPage.value - 1) * virusTargetPageSize
+  return filteredVirusTargets.value.slice(start, start + virusTargetPageSize)
+})
+
+watch(virusTargetSearch, () => {
+  virusTargetPage.value = 1
+})
+
+function handleVirusTargetPageChange(page: number) {
+  virusTargetPage.value = page
+}
+
+function selectVirusTarget(target: VirusTarget) {
+  selectedVirusTargetKey.value = getVirusTargetKey(target)
+}
+
+async function loadVirusTargets() {
+  const requestId = ++virusTargetsRequestId
+  virusTargetsLoading.value = true
+  virusTargetsLoaded.value = false
+  virusTargetsError.value = ''
+
+  try {
+    const response = await fetchVirusTargets()
+    if (requestId !== virusTargetsRequestId) return
+    if (response.status !== RAW_RESPONSE_STATUS_OK) {
+      throw new Error(response.failMsg || '加载分析目标失败')
+    }
+
+    if (!Array.isArray(response.data)) throw new Error('分析目标列表格式不正确')
+    const supportedTargets = response.data.filter(target => target.pipelineType === 100 || target.pipelineType === 101)
+    if (supportedTargets.some(target => !Number.isSafeInteger(target.taxId) || target.taxId <= 0 ||
+      typeof target.label !== 'string' || !target.label.trim() ||
+      (target.pipelineType === 101 && target.taxId !== 2697049))) {
+      throw new Error('分析目标列表包含无效的专项信息')
+    }
+    virusTargets.value = [...new Map(supportedTargets.map(target => [getVirusTargetKey(target), target])).values()]
+    virusTargetSearch.value = ''
+    virusTargetPage.value = 1
+    if (
+      selectedVirusTargetKey.value !== null &&
+      !virusTargets.value.some((target) => getVirusTargetKey(target) === selectedVirusTargetKey.value)
+    ) {
+      selectedVirusTargetKey.value = null
+      ElMessage.warning('原分析目标已不可选，请重新选择')
+    }
+    virusTargetsLoaded.value = true
+  } catch (error) {
+    if (requestId !== virusTargetsRequestId) return
+    console.error(error)
+    const errorData = isAxiosError(error) ? error.response?.data : null
+    virusTargetsError.value =
+      (typeof errorData === 'string' ? errorData : errorData?.failMsg) ||
+      (error instanceof Error ? error.message : '加载分析目标失败，请重试')
+    virusTargets.value = []
+    selectedVirusTargetKey.value = null
+  } finally {
+    if (requestId === virusTargetsRequestId) {
+      virusTargetsLoading.value = false
+    }
+  }
+}
+
 const selectedTypeSelectionName = computed(() => {
-  let typeName = ''
-  let specificTypeName = ''
-
   const type = Object.values(analysisTypes).find((type) => type.id === pipelineTypeSelection.typeId)
-  if (type === undefined) {
-    return {
-      typeName: null,
-      specificTypeName: null
-    }
-  }
-
-  if (type.specificTypes === undefined || type.specificType == null) {
-    return {
-      typeName: type.title,
-      specificTypeName: type.title
-    }
-  }
-
-  //ts-ignore
-  const specificType = Object.values(type.specificTypes).find((specificType) => { specificType.id === pipelineTypeSelection.specificTypeId })
-  if (!!specificType) {
-    return {
-      typeName: type.title,
-      specificTypeName: "--"
-    }
-  }
-
+  const specificType = type && 'specificTypes' in type
+    ? Object.values(type.specificTypes).find(
+      (item) => item.id === pipelineTypeSelection.specificTypeId
+    )
+    : null
   return {
-    typeName: type.title,
-    specificTypeName: specificType.title
+    typeName: type?.title ?? '--',
+    specificTypeName: isVirusAnalysis.value
+      ? selectedVirusTarget.value?.label ?? '--'
+      : specificType?.title ?? type?.title ?? '--'
   }
-
-
 })
 
 
-const selectedReference = ref<ReferenceGenome | null>(null)
 const selectedProject = computed<BioProject | null>(() => {
   const project = projectList.value.find((project) => { return project.pid === analysisTasksBuildJob.projectId })
   if (project === undefined) {
@@ -317,54 +436,7 @@ const selectedProject = computed<BioProject | null>(() => {
   return project
 })
 
-const selectedReferenceLabel = computed(() =>
-  selectedReference.value
-    ? `${selectedReference.value.accessions.join('、')} · ${selectedReference.value.refseqName}`
-    : '--'
-)
-const activeTask = computed(() => analysisTasksBuildJob.tasks[activeTaskIndex.value])
-
-
-const referenceListLoading = ref(false)
-const referenceList = ref<ReferenceGenome[]>([])
-const referenceGenomePageInfoAtSearchCondition = reactive({
-  search: '',
-  page: 1,
-  pageSize: 20,
-  totalRecords: 0
-})
-
-async function loadReferenceGenomeList(query, pageIndex, pageSize) {
-
-  let fetchedReferenceGenomeResponse: RawResponse<FetchReferenceGenomeResult> = null;
-  let fetchedReferenceGenomeResult: FetchReferenceGenomeResult = null;
-  while (true) {
-    const from = pageIndex * pageSize
-    fetchedReferenceGenomeResponse = await fetchReferenceGenomeList(query, from, pageSize)
-
-    if (fetchedReferenceGenomeResponse.status !== RAW_RESPONSE_STATUS_OK) {
-      ElMessage.error(fetchedReferenceGenomeResponse.failMsg)
-      return
-    }
-
-    fetchedReferenceGenomeResult = fetchedReferenceGenomeResponse.data
-
-    debugger
-    if (pageIndex * pageSize >= fetchedReferenceGenomeResult.total && fetchedReferenceGenomeResult.total > 0) {
-      const maxPage = Math.max(
-        1,
-        Math.ceil(fetchedReferenceGenomeResult.total / pageSize)
-      )
-      pageIndex = maxPage - 1
-    } else {
-      break
-    }
-  }
-
-  referenceGenomePageInfoAtSearchCondition.totalRecords = fetchedReferenceGenomeResult.total
-  referenceGenomePageInfoAtSearchCondition.page = pageIndex + 1
-  referenceList.value = fetchedReferenceGenomeResult.referenceGenomes
-}
+const activeTask = computed(() => analysisTasksBuildJob.tasks[activeTaskIndex.value] ?? null)
 
 const projectList = ref<BioProject[]>([])
 const projectListLoading = ref(false)
@@ -405,18 +477,94 @@ function addTask(source) {
   analysisTasksBuildJob.tasks.push(createTask(source, createTaskName(batchNamePrefix.value, activeTaskIndex.value)))
 }
 
-function removeTask(index) {
-  if (analysisTasksBuildJob.tasks.length === 1) {
-    ElMessage.warning('至少需要保留一个分析任务')
+function toUploadUserFile(file: File): UploadUserFile {
+  const raw = file as UploadRawFile
+  raw.uid = genFileId()
+  return {
+    name: file.name,
+    size: file.size,
+    uid: raw.uid,
+    status: 'ready',
+    raw
+  }
+}
+
+function getTaskInputSummary(task: UserCreateAnalysisTask): string {
+  const slot = task.inputSlots[0]
+  const files = slot.type === 2
+    ? slot.assembly
+    : slot.type === 0 ? [...slot.r1, ...slot.r2] : slot.r1
+  return files.map((file) => file.raw?.webkitRelativePath || file.name).join(' / ') || '尚未选择文件'
+}
+
+function importBatchFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  // Clear the picker so choosing the same files again still fires change.
+  input.value = ''
+  if (!files.length) return
+
+  const fromDirectory = input.hasAttribute('webkitdirectory')
+  const { groups, ignoredFiles, ambiguousFiles, skippedSubdirectoryFiles } =
+    prepareBatchFileImport(files, fromDirectory)
+  const paired = groups.filter((group) => group.r2 !== null).length
+  batchImportSummary.value = {
+    paired,
+    single: groups.length - paired,
+    ignored: ignoredFiles.length,
+    ambiguous: ambiguousFiles.length,
+    skippedSubdirectoryFiles
+  }
+
+  if (!groups.length) {
+    ElMessage.warning(fromDirectory
+      ? '当前目录没有可导入的 FASTQ 文件，子目录文件不导入'
+      : '未找到 FASTQ 文件，请选择 .fastq、.fq 或对应的 .gz 文件')
     return
   }
+
+  const tasks = analysisTasksBuildJob.tasks
+  const replaceEmptyTask = tasks.length === 1 && tasks[0].inputSlots.every((slot) =>
+    slot.r1.length === 0 && slot.r2.length === 0 && slot.assembly.length === 0
+  )
+  const startIndex = replaceEmptyTask ? 0 : tasks.length
+  const importedTasks = groups.map((group, index): UserCreateAnalysisTask => {
+    const type: AnalysisTaskDataType = group.r2 ? 0 : 1
+    return {
+      name: createTaskName(batchNamePrefix.value, startIndex + index),
+      type,
+      inputSlots: [{
+        r1: [toUploadUserFile(group.r1)],
+        r2: group.r2 ? [toUploadUserFile(group.r2)] : [],
+        assembly: [],
+        type
+      }]
+    }
+  })
+
+  if (replaceEmptyTask) tasks.splice(0, 1)
+  for (const task of importedTasks) tasks.push(task)
+  activeTaskIndex.value = startIndex
+}
+
+function removeTask(index: number) {
   analysisTasksBuildJob.tasks.splice(index, 1)
-  activeTaskIndex.value = Math.min(activeTaskIndex.value, analysisTasksBuildJob.tasks.length - 1)
+  if (index < activeTaskIndex.value) {
+    activeTaskIndex.value--
+  }
+  activeTaskIndex.value = Math.max(0, Math.min(activeTaskIndex.value, analysisTasksBuildJob.tasks.length - 1))
+  batchImportSummary.value = null
 
   analysisTasksBuildJob.tasks.forEach((task, index) => {
     task.name = createTaskName(batchNamePrefix.value, index)
   })
 
+}
+
+function clearTasks() {
+  analysisTasksBuildJob.tasks.splice(0)
+  activeTaskIndex.value = 0
+  batchImportSummary.value = null
 }
 
 function uploadedFileCount(task) {
@@ -443,12 +591,17 @@ function displayTaskName(task, index) {
   return task.name
 }
 
-function selectReference(reference: ReferenceGenome) {
-  selectedReference.value = reference
-}
-
-
 function doCheckForBuildJobBeforeConfirmation() {
+  if (analysisTasksBuildJob.tasks.length === 0) {
+    return {
+      satisfied: false,
+      msg: '请至少添加一个任务或批量导入文件'
+    }
+  }
+
+  if (isVirusAnalysis.value && !referenceSelectionReady.value) {
+    return { satisfied: false, msg: referenceSelectionMessage.value || '请确认本批次参考范围' }
+  }
 
   if (!batchNamePrefix?.value.trim()) {
     return {
@@ -496,10 +649,12 @@ function checkCurrentSectionSatisfied(currentSectionId) {
   if (currentSectionId === sectionMap.projectAndAnalysisTypeSelection) {
     satisfied = selectedProject.value !== null && pipelineTypeSelection.typeId !== null
     msg = '请选择项目和分析任务类型'
-  } else if (currentSectionId === sectionMap.referenceGenomeSelection) {
-    satisfied = !!selectedReference.value
-    msg = '请选择参考基因组'
-  } else if (currentSectionId === sectionMap.virusSpecificTypeSelection || currentSectionId === sectionMap.metagenomeSpecificTypeSelection) {
+  } else if (currentSectionId === sectionMap.virusTargetSelection) {
+    satisfied = virusTargetSelectionReady.value && referenceSelectionReady.value
+    msg = !virusTargetSelectionReady.value
+      ? '请加载并选择有效的分析目标'
+      : referenceSelectionMessage.value || '请确认本批次参考范围'
+  } else if (currentSectionId === sectionMap.metagenomeSpecificTypeSelection) {
     satisfied = !!pipelineTypeSelection.specificTypeId
     msg = '请选择具体类型'
   }
@@ -517,22 +672,14 @@ function calculateNextSectionId(currentSectionId) {
       return sectionMap.taskCreate
     }
     if (pipelineTypeSelection.typeId === analysisTypes.virus.id) {
-      return sectionMap.virusSpecificTypeSelection
+      return sectionMap.virusTargetSelection
     }
     if (pipelineTypeSelection.typeId === analysisTypes.metagenome.id) {
       return sectionMap.metagenomeSpecificTypeSelection
     }
   }
 
-  if (currentSectionId === sectionMap.virusSpecificTypeSelection) {
-    if (pipelineTypeSelection.specificTypeId === analysisTypes.virus.specificTypes.covid19.id) {
-      return sectionMap.taskCreate
-    } else {
-      return sectionMap.referenceGenomeSelection
-    }
-  }
-
-  if (currentSectionId === sectionMap.referenceGenomeSelection) {
+  if (currentSectionId === sectionMap.virusTargetSelection) {
     return sectionMap.taskCreate
   }
 
@@ -565,6 +712,15 @@ function getRawFile(
 }
 
 function submit() {
+  const { satisfied, msg } = doCheckForBuildJobBeforeConfirmation()
+  if (!satisfied) {
+    ElMessage.warning(msg)
+    return
+  }
+  if (isVirusAnalysis.value && !virusTargetSelectionReady.value) {
+    ElMessage.warning('请加载并选择有效的分析目标')
+    return
+  }
   if (
     !selectedProject.value ||
     analysisTasksBuildJob.analysisPipelineTypeCode === null
@@ -575,12 +731,15 @@ function submit() {
 
   const request: TaskUploadRequest = {
     project: selectedProject.value,
-    referenceGenome: selectedReference.value,
+    referenceGenome: null,
+    virusTarget: isVirusAnalysis.value ? { ...selectedVirusTarget.value } : null,
+    ...(isVirusAnalysis.value ? { enabledReferenceIds: [...enabledReferenceIds.value] } : {}),
     analysisType: analysisTasksBuildJob.analysisPipelineTypeCode,
     customerReferenceGenome: null,
     tasks: analysisTasksBuildJob.tasks.map((task) => ({
       name: task.name,
-      type: task.type,
+      sequencingPlatform: analysisTasksBuildJob.sequencingPlatform ?? 0,
+      type: task.inputSlots[0].type,
       inputSlots: task.inputSlots.map((slot) => {
         return {
           r1: getRawFile(slot.r1),
@@ -613,57 +772,25 @@ function replaceWithNewFile(files, uploadInstance: UploadInstance) {
 
 }
 
-async function handleReferenceListTablePageChange(currentPage) {
-  referenceGenomePageInfoAtSearchCondition.page = currentPage
-  referenceListLoading.value = true
-
-  try {
-    await loadReferenceGenomeList(
-      referenceGenomePageInfoAtSearchCondition.search,
-      currentPage - 1,
-      referenceGenomePageInfoAtSearchCondition.pageSize
-    )
-  } catch (error) {
-    console.error(error)
-    ElMessage.error('加载参考基因组列表失败')
-  } finally {
-    referenceListLoading.value = false
-  }
-}
-
-
-
-async function doReferenceGenomeSearch() {
-
-  referenceListLoading.value = true
-  try {
-    await loadReferenceGenomeList(referenceGenomePageInfoAtSearchCondition.search, referenceGenomePageInfoAtSearchCondition.page-1, referenceGenomePageInfoAtSearchCondition.pageSize)
-  } catch (error) {
-    console.error(error)
-    ElMessage.error('加载参考基因组列表失败')
-  } finally {
-    referenceListLoading.value = false
-  }
-}
-
-
 onBeforeMount(() => {
   initProjectList()
-  // loadReferenceGenomeList('', 0, referenceGenomePageInfoAtSearchCondition.pageSize)
-  doReferenceGenomeSearch()
+  loadVirusTargets()
 })
 
 function calculateActiveStep() {
 
 
-  const activeZeroSections = [sectionMap.projectAndAnalysisTypeSelection, sectionMap.virusSpecificTypeSelection, sectionMap.metagenomeSpecificTypeSelection]
+  const activeZeroSections = [sectionMap.projectAndAnalysisTypeSelection, sectionMap.metagenomeSpecificTypeSelection]
   if (activeZeroSections.some(sectionId => sectionId === activeSectionId.value)) { return 0 }
-  if (activeSectionId.value === sectionMap.referenceGenomeSelection) {
+  if (activeSectionId.value === sectionMap.virusTargetSelection) {
     return 1
   }
 
   if (activeSectionId.value === sectionMap.taskCreate) {
     return 2
+  }
+  if (activeSectionId.value === sectionMap.comfirmation) {
+    return 3
   }
 }
 
@@ -676,6 +803,9 @@ function hasNextSection() {
 }
 
 function selectAnalysisType(id: string) {
+  if (pipelineTypeSelection.typeId !== id) {
+    pipelineTypeSelection.specificTypeId = null
+  }
   pipelineTypeSelection.typeId = id
 }
 
@@ -696,7 +826,7 @@ function selectSpeceficType(speceficTypeId) {
     <el-card shadow="never" class="step-card">
       <el-steps :active="calculateActiveStep()" align-center finish-status="success">
         <el-step title="项目与分析类型" description="选择流程" />
-        <el-step title="参考基因组" description="搜索并选择" />
+        <el-step title="分析目标" description="病毒分析时选择" />
         <el-step title="任务与数据" :description="`已创建 ${analysisTasksBuildJob.tasks.length} 个任务`" />
         <el-step title="确认提交" description="检查信息" />
       </el-steps>
@@ -746,20 +876,16 @@ function selectSpeceficType(speceficTypeId) {
         </div>
       </div>
 
-      <div v-else-if="activeSectionId === sectionMap.virusSpecificTypeSelection || activeSectionId === sectionMap.metagenomeSpecificTypeSelection"
-        class="step-content virusSpecificTypeSelection">
+      <div v-else-if="activeSectionId === sectionMap.metagenomeSpecificTypeSelection"
+        class="step-content">
         <div class="section-heading">
-          <div v-if="activeSectionId === sectionMap.virusSpecificTypeSelection">
-            <h2>选择病毒分析流程</h2>
-            <p>根据样本类型选择新冠病毒专项分析或常规病毒全基因组分析</p>
-          </div>
-          <div v-else>
+          <div>
             <h2>选择宏基因分析类型</h2>
           </div>
         </div>
 
         <div class="type-grid">
-          <button v-for="(specificType, typeId) in activeSectionId === sectionMap.virusSpecificTypeSelection ? analysisTypes.virus.specificTypes:analysisTypes.metagenome.specificTypes" :key="typeId" type="button"
+          <button v-for="(specificType, typeId) in analysisTypes.metagenome.specificTypes" :key="typeId" type="button"
             :class="[
               'type-card',
               {
@@ -803,86 +929,107 @@ function selectSpeceficType(speceficTypeId) {
 
 
 
-      <div v-else-if="activeSectionId === sectionMap.referenceGenomeSelection" class="step-content">
+      <div v-else-if="activeSectionId === sectionMap.virusTargetSelection" class="step-content">
         <div class="section-heading">
           <span>01</span>
           <div>
-            <h2>选择参考基因组</h2>
-            <p>本批次内的所有任务将使用同一个参考基因组</p>
+            <h2>选择分析目标</h2>
+            <p>本批次任务使用同一个分析目标，系统会加载该目标的候选参考，并在分析时选择使用的参考。</p>
           </div>
         </div>
 
-        <div class="reference-browser">
-          <div class="reference-toolbar">
-            <el-input v-model="referenceGenomePageInfoAtSearchCondition.search" clearable placeholder="输入Tax ID搜索"
-              @keyup.enter="doReferenceGenomeSearch">
-              <template #prefix>
-                <el-icon>
-                  <Search />
-                </el-icon>
-              </template>
-            </el-input>
-            <el-tooltip content="刷新参考基因组列表" placement="top">
-              <el-button
-                text
-                circle
-                :loading="referenceListLoading"
-                @click="doReferenceGenomeSearch"
+        <div class="virus-target-toolbar">
+          <el-input
+            v-model="virusTargetSearch"
+            clearable
+            placeholder="搜索目标名称或 Tax ID"
+            aria-label="搜索分析目标"
+            :disabled="virusTargetsLoading || !virusTargetsLoaded"
+          >
+            <template #prefix><el-icon><Search /></el-icon></template>
+          </el-input>
+          <el-button :loading="virusTargetsLoading" @click="loadVirusTargets">
+            <el-icon v-if="!virusTargetsLoading"><Refresh /></el-icon>
+            {{ virusTargetsError ? '重新加载' : '刷新列表' }}
+          </el-button>
+        </div>
+        <el-alert v-if="virusTargetsLoading" title="正在加载分析目标..." type="info" :closable="false" show-icon />
+        <el-alert
+          v-else-if="virusTargetsError"
+          title="分析目标加载失败"
+          :description="virusTargetsError"
+          type="error"
+          :closable="false"
+          show-icon
+        />
+        <el-empty v-else-if="virusTargetsLoaded && !virusTargets.length" description="暂无可选分析目标" />
+        <template v-else-if="virusTargetsLoaded">
+          <el-empty v-if="!filteredVirusTargets.length" description="未找到匹配的分析目标，请调整搜索条件" />
+          <template v-else>
+            <div class="virus-target-grid" role="group" aria-label="分析目标（单选）">
+              <button
+                v-for="target in pagedVirusTargets"
+                :key="getVirusTargetKey(target)"
+                type="button"
+                :class="['type-card', 'virus-target-card', { selected: selectedVirusTargetKey === getVirusTargetKey(target) }]"
+                :aria-pressed="selectedVirusTargetKey === getVirusTargetKey(target)"
+                @click="selectVirusTarget(target)"
               >
-                <el-icon v-if="!referenceListLoading">
-                  <Refresh />
+                <span class="virus-target-name">{{ target.label }}</span>
+                <small>Tax ID {{ target.taxId }}</small>
+                <el-icon v-if="selectedVirusTargetKey === getVirusTargetKey(target)" class="selected-icon">
+                  <CircleCheckFilled />
                 </el-icon>
-              </el-button>
-            </el-tooltip>
-            <!-- <span>共 {{ filteredReferenceGenomes.length }} 条参考基因组</span> -->
-          </div>
-
-          <div v-loading="referenceListLoading" element-loading-text="正在加载参考基因组..." class="reference-browser">
-            <el-table :data="referenceList" row-key="refId" highlight-current-row class="reference-table"
-              @row-click="selectReference">
-              <el-table-column width="52" align="center">
-                <template #default="{ row }">
-                  <el-radio :model-value="selectedReference?.refId" :value="row.refId" @change="selectReference(row)" />
-                </template>
-              </el-table-column>
-              <el-table-column label="Accession" min-width="145">
-                <template #default="{ row }">{{ row.accessions.join('、') }}</template>
-              </el-table-column>
-              <el-table-column prop="refseqName" label="物种" min-width="230" />
-              <el-table-column prop="taxId" label="Tax ID" width="110" />
-              <el-table-column prop="sourceDb" label="来源" width="120" />
-              <!-- <el-table-column label="类型">
-
-              </el-table-column> -->
-              <!-- <el-table-column prop="meta.genomeLength" label="基因组长度" width="110" />
-              <el-table-column prop="meta.version" label="版本" width="75" /> -->
-            </el-table>
-
-            <div class="reference-pagination">
-              <span>每页 {{ referenceGenomePageInfoAtSearchCondition.pageSize }} 条</span>
-              <el-pagination :current-page="referenceGenomePageInfoAtSearchCondition.page"
-                :page-size="referenceGenomePageInfoAtSearchCondition.pageSize"
-                @current-change="handleReferenceListTablePageChange"
-                :total="referenceGenomePageInfoAtSearchCondition.totalRecords" background layout="prev, pager, next" />
+              </button>
             </div>
-          </div>
-        </div>
+            <div class="virus-target-pagination">
+              <span>共 {{ filteredVirusTargets.length }} 个目标 · 每页 {{ virusTargetPageSize }} 项</span>
+              <el-pagination
+                :current-page="virusTargetPage"
+                :page-size="virusTargetPageSize"
+                :total="filteredVirusTargets.length"
+                :pager-count="5"
+                background
+                layout="prev, pager, next"
+                @current-change="handleVirusTargetPageChange"
+              />
+            </div>
+          </template>
+        </template>
 
-        <div v-if="selectedReference" class="selected-reference">
+        <div v-if="selectedVirusTarget && virusTargetSelectionReady" class="selected-reference">
           <div class="selected-reference-icon">
             <el-icon>
               <CircleCheckFilled />
             </el-icon>
           </div>
           <div>
-            <span>已选择参考基因组</span>
-            <strong>{{ selectedReferenceLabel }}</strong>
-            <small>Tax ID {{ selectedReference.taxId }} · {{ selectedReference.meta.genomeLength }}</small>
+            <span>已选择分析目标</span>
+            <strong>{{ selectedVirusTarget.label }}</strong>
+            <small>
+              Tax ID {{ selectedVirusTarget.taxId }} ·
+              {{ selectedVirusTarget.pipelineType === analysisPipelineTypeCodes.virusCovid ? '新冠病毒分析流程' : '常规病毒分析流程' }}
+            </small>
           </div>
-          <el-button link type="primary" @click="selectedReference = null">
-            重新选择
+          <el-button link type="primary" @click="selectedVirusTargetKey = null">
+            清除选择
           </el-button>
         </div>
+        <TaskReferenceSelection
+          v-if="selectedVirusTarget && virusTargetSelectionReady"
+          :candidates="referenceCandidates"
+          :selected-ids="enabledReferenceIds"
+          :loading="referenceCandidatesLoading"
+          :loaded="referenceCandidatesLoaded"
+          :error="referenceCandidatesError"
+          :validation-message="referenceSelectionMessage"
+          :missing-selected-ids="missingSelectedIds"
+          @refresh="refreshReferenceCandidates"
+          @select="setReferenceSelected"
+          @select-all="selectAllReferences"
+          @clear-selection="clearReferenceSelection"
+          @remove-unavailable="removeUnavailableSelection"
+        />
       </div>
 
       <div v-else-if="activeSectionId === sectionMap.taskCreate" class="step-content batch-step">
@@ -894,17 +1041,32 @@ function selectSpeceficType(speceficTypeId) {
               <p>同一批次使用相同的分析类型和流程参数，每个任务独立上传数据</p>
             </div>
           </div>
-          <el-button type="primary" plain @click="addTask()">
-            <el-icon>
-              <Plus />
-            </el-icon>添加任务
-          </el-button>
+          <div class="batch-heading-actions">
+            <el-popconfirm
+              title="清空本批次的所有任务和已选文件？批次设置将保留。"
+              :width="280"
+              confirm-button-text="清空"
+              cancel-button-text="取消"
+              @confirm="clearTasks"
+            >
+              <template #reference>
+                <el-button type="danger" plain :disabled="analysisTasksBuildJob.tasks.length === 0">
+                  清空任务
+                </el-button>
+              </template>
+            </el-popconfirm>
+            <el-button type="primary" plain @click="addTask()">
+              <el-icon>
+                <Plus />
+              </el-icon>添加任务
+            </el-button>
+          </div>
         </div>
 
         <div class="naming-panel">
           <div class="naming-title">
             <div>
-              <strong>批次任务命名</strong><span>设置一次，系统将按顺序生成本批次全部任务名称</span>
+              <strong>批次设置</strong><span>统一设置本批次的任务名称前缀和测序平台，任务名称按顺序自动编号</span>
             </div>
             <el-tag type="success" effect="plain">自动编号</el-tag>
           </div>
@@ -946,6 +1108,26 @@ function selectSpeceficType(speceficTypeId) {
                 </div>
               </div>
             </el-form-item>
+            <el-form-item label="测序平台">
+              <div class="sequencing-platform-field">
+                <el-select
+                  v-model="analysisTasksBuildJob.sequencingPlatform"
+                  clearable
+                  placeholder="未知（自动识别）"
+                  @clear="analysisTasksBuildJob.sequencingPlatform = 0"
+                >
+                  <el-option
+                    v-for="option in sequencingPlatformOptions"
+                    :key="option.value"
+                    :label="option.label"
+                    :value="option.value"
+                  />
+                </el-select>
+                <p class="sequencing-platform-tip">
+                  请选择生成测序数据的平台。不确定时请选择“未知（自动识别）”，由系统尝试识别。
+                </p>
+              </div>
+            </el-form-item>
             <!-- <el-form-item label="分隔符">
               <el-select v-model="form.separator">
                 <el-option label="-（短横线）" value="-" />
@@ -978,6 +1160,51 @@ function selectSpeceficType(speceficTypeId) {
           </div> -->
         </div>
 
+        <div class="batch-import-panel">
+          <div class="batch-import-heading">
+            <div>
+              <strong>批量导入测序文件</strong>
+              <p>每对 R1 / R2 创建一个双端任务，未配对文件创建单端任务，导入后可手动调整。</p>
+            </div>
+            <div class="batch-import-actions">
+              <el-button type="primary" plain @click="batchFilesInput?.click()">
+                <el-icon><Files /></el-icon>多选文件
+              </el-button>
+              <el-button plain @click="batchDirectoryInput?.click()">
+                <el-icon><FolderOpened /></el-icon>选择目录
+              </el-button>
+            </div>
+          </div>
+          <input
+            ref="batchFilesInput"
+            type="file"
+            accept=".fastq,.fq,.fastq.gz,.fq.gz"
+            multiple
+            hidden
+            @change="importBatchFiles"
+          />
+          <input
+            ref="batchDirectoryInput"
+            type="file"
+            webkitdirectory
+            multiple
+            hidden
+            @change="importBatchFiles"
+          />
+          <p class="batch-import-tip">
+            支持 .fastq / .fq / .fastq.gz / .fq.gz，按 sample_R1 / sample_R2、sample_1 / sample_2
+            或 sample_R1_001 / sample_R2_001 配对。仅匹配本次选取的文件；选择目录时只导入当前目录直属文件，忽略所有子目录；不同 lane 分别创建任务。
+          </p>
+          <p class="batch-import-tip">导入会追加到任务列表，沿用批次前缀编号；只替换初始的单个空任务，已有文件保留。</p>
+          <el-alert
+            v-if="batchImportSummary"
+            :title="batchImportMessage"
+            :type="batchImportSummary.single || batchImportSummary.ignored || batchImportSummary.skippedSubdirectoryFiles ? 'warning' : 'success'"
+            :closable="false"
+            show-icon
+          />
+        </div>
+
         <div class="batch-editor">
           <aside class="task-list">
             <div class="task-list-title">
@@ -993,6 +1220,7 @@ function selectSpeceficType(speceficTypeId) {
                   item.inputSlots[0].type
                   ]
                 }}</small>
+                <small class="task-source" :title="getTaskInputSummary(item)">{{ getTaskInputSummary(item) }}</small>
               </span>
               <el-icon v-if="false" class="task-valid">
                 <CircleCheckFilled />
@@ -1005,7 +1233,7 @@ function selectSpeceficType(speceficTypeId) {
             </button>
           </aside>
 
-          <section class="task-editor">
+          <section v-if="activeTask" class="task-editor">
             <div class="editor-heading">
               <div>
                 <span>任务 {{ activeTaskIndex + 1 }}</span><strong>{{ displayTaskName(activeTask, activeTaskIndex)
@@ -1091,6 +1319,12 @@ function selectSpeceficType(speceficTypeId) {
               v-if="activeTask.inputSlots[0].type === 2 && pipelineTypeSelection.typeId === analysisTypes.virus.id"
               title="使用已组装数据时，系统将只使用参考基因组进行序列比较" type="info" :closable="false" show-icon />
           </section>
+          <section v-else class="task-editor task-editor-empty">
+            <el-empty description="暂无任务" :image-size="100">
+              <p class="empty-task-tip">添加一个任务，或通过上方“多选文件”“选择目录”批量导入。</p>
+              <el-button type="primary" plain @click="addTask()">添加任务</el-button>
+            </el-empty>
+          </section>
         </div>
       </div>
 
@@ -1105,17 +1339,23 @@ function selectSpeceficType(speceficTypeId) {
         <el-descriptions :column="2" border class="summary">
           <el-descriptions-item label="所属项目">{{ selectedProject.projectName }}</el-descriptions-item>
           <el-descriptions-item label="分析类型">{{ selectedTypeSelectionName.typeName }}</el-descriptions-item>
-          <el-descriptions-item label="具体类型">
+          <el-descriptions-item :label="isVirusAnalysis ? '分析目标' : '具体类型'">
             {{ selectedTypeSelectionName.specificTypeName }}
           </el-descriptions-item>
           <el-descriptions-item label="任务名称前缀">{{ batchNamePrefix }}</el-descriptions-item>
+          <el-descriptions-item label="测序平台">{{ sequencingPlatformLabel }}</el-descriptions-item>
           <el-descriptions-item label="任务数量">{{ analysisTasksBuildJob.tasks.length }} 个</el-descriptions-item>
           <el-descriptions-item
-            v-if="pipelineTypeSelection.typeId === analysisTypes.virus.id && pipelineTypeSelection.specificTypeId === analysisTypes.virus.specificTypes.generalVirus.id"
-            label="参考基因组">
-            {{ selectedReference.refseqName }}
+            v-if="isVirusAnalysis"
+            label="目标 Tax ID">
+            {{ analysisTasksBuildJob.taxId ?? '--' }}
+          </el-descriptions-item>
+          <el-descriptions-item v-if="isVirusAnalysis" label="本批次参考范围">
+            已选 {{ enabledReferenceIds.length }} / 共 {{ referenceCandidates.length }} 条（仅本批次生效）
           </el-descriptions-item>
         </el-descriptions>
+        <el-alert v-if="isVirusAnalysis && !referenceSelectionReady" :title="referenceSelectionMessage"
+          type="warning" :closable="false" show-icon />
         <div class="confirm-list">
           <div class="confirm-list-heading">
             <strong>本次创建的任务</strong><span>共 {{ analysisTasksBuildJob.tasks.length }} 项</span>
@@ -1132,12 +1372,19 @@ function selectSpeceficType(speceficTypeId) {
               <template #default="{ row }">{{ row.description || '--' }}</template>
             </el-table-column>
             <el-table-column label="数据类型" min-width="145">
-              <template #default="{ row }">
-                {{
-                  { 0: '双端测序 FASTQ', 1: '单端测序 FASTQ', 2: '已组装 Contigs' }[
-                  row.inputSlots[0].type
-                  ]
-                }}
+              <template #default="{ row, $index }">
+                <span v-if="$index >= 0">
+                  {{
+                    { 0: '双端测序 FASTQ', 1: '单端测序 FASTQ', 2: '已组装 Contigs' }[
+                    row.inputSlots[0].type
+                    ]
+                  }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="文件" min-width="240" show-overflow-tooltip>
+              <template #default="{ row, $index }">
+                <span v-if="$index >= 0">{{ getTaskInputSummary(row) }}</span>
               </template>
             </el-table-column>
             <!-- <el-table-column label="文件" width="110">
@@ -1163,13 +1410,23 @@ function selectSpeceficType(speceficTypeId) {
         <span v-else></span>
         <div>
           <el-button @click="emit('cancel')">取消</el-button>
-          <el-button v-if="hasNextSection()" type="primary" @click="next">
+          <el-button
+            v-if="hasNextSection()"
+            type="primary"
+            :disabled="
+              (activeSectionId === sectionMap.virusTargetSelection && (!virusTargetSelectionReady || !referenceSelectionReady)) ||
+              (activeSectionId === sectionMap.taskCreate && analysisTasksBuildJob.tasks.length === 0)
+            "
+            @click="next"
+          >
             下一步
             <el-icon>
               <ArrowRight />
             </el-icon>
           </el-button>
-          <el-button v-else type="primary" @click="submit">
+          <el-button v-else type="primary"
+            :disabled="analysisTasksBuildJob.tasks.length === 0 || (isVirusAnalysis && (!virusTargetSelectionReady || !referenceSelectionReady))"
+            @click="submit">
             <el-icon>
               <Promotion />
             </el-icon>
@@ -1220,6 +1477,14 @@ function selectSpeceficType(speceficTypeId) {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.batch-heading-actions {
+  display: flex;
+  flex-shrink: 0;
+  margin-bottom: 14px;
 }
 
 .naming-panel {
@@ -1272,6 +1537,17 @@ function selectSpeceficType(speceficTypeId) {
   width: 100%;
 }
 
+.sequencing-platform-field {
+  width: 100%;
+}
+
+.sequencing-platform-tip {
+  margin: 6px 0 0;
+  color: #71817e;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .prefix-input.is-available :deep(.el-input__wrapper) {
   box-shadow: 0 0 0 1px var(--el-color-success) inset;
 }
@@ -1311,52 +1587,60 @@ function selectSpeceficType(speceficTypeId) {
   color: var(--el-color-primary);
 }
 
-.reference-browser {
-  overflow: hidden;
-  border: 1px solid #dfe7e5;
-  border-radius: 10px;
-  background: #fff;
-}
-
-.reference-toolbar {
+.virus-target-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  padding: 14px 16px;
-  border-bottom: 1px solid #e7eceb;
-  background: #f8faf9;
+  margin-bottom: 16px;
 }
 
-.reference-toolbar :deep(.el-input) {
-  width: 360px;
+.virus-target-toolbar :deep(.el-input) {
+  flex: 1;
+  min-width: 0;
 }
 
-.reference-toolbar>span {
-  color: #82908d;
-  font-size: 10px;
+.virus-target-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.reference-table {
-  cursor: pointer;
+.virus-target-grid .virus-target-card {
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+  min-height: 96px;
+  padding: 16px;
+  gap: 10px;
 }
 
-.reference-table :deep(.el-radio__label) {
-  display: none;
+.virus-target-card:focus-visible {
+  outline: 2px solid #167c6b;
+  outline-offset: 3px;
 }
 
-.reference-pagination {
-  min-height: 52px;
+.virus-target-name {
+  padding-right: 18px;
+  color: #293937;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.virus-target-pagination {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 15px;
-  border-top: 1px solid #e7eceb;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
 }
 
-.reference-pagination>span {
-  color: #8b9895;
-  font-size: 10px;
+.virus-target-pagination>span {
+  color: #82908d;
+  font-size: 12px;
 }
 
 .selected-reference {
@@ -1435,6 +1719,50 @@ function selectSpeceficType(speceficTypeId) {
   margin-left: auto;
   color: #81908d;
   font-size: 9px;
+}
+
+.batch-import-panel {
+  margin-bottom: 14px;
+  padding: 15px 17px;
+  border: 1px solid #dce8e5;
+  border-radius: 10px;
+  background: #f7fbfa;
+}
+
+.batch-import-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.batch-import-heading strong {
+  color: #30423f;
+  font-size: 13px;
+}
+
+.batch-import-heading p,
+.batch-import-tip {
+  margin: 5px 0 0;
+  color: #71817e;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.batch-import-actions {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.batch-import-panel :deep(.el-alert) {
+  margin-top: 12px;
+}
+
+.task-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .batch-editor {
@@ -1547,6 +1875,19 @@ function selectSpeceficType(speceficTypeId) {
 
 .task-editor {
   padding: 18px 21px 20px;
+}
+
+.task-editor-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-task-tip {
+  margin: 0 0 16px;
+  color: #899693;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .editor-heading {

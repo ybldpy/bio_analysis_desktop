@@ -25,9 +25,11 @@ export const backendAPI = {
   getAllProjects: 'project/getAll',
   createProject: 'project/create',
   pipelineNamePrefixCheck: 'pipeline/checkPipelineNamePrefixAvailable',
+  virusTargets: 'pipeline/virusTargets',
   batchCreatePipelines: 'pipeline/batchCreatePipelines',
   pipelineInputFileUpload: 'pipelineInput/upload',
   startPipeline: 'pipeline/start',
+  confirmTaxonomy: 'pipeline/stage/taxonomy/confirm',
   queryReferenceGenomes: 'referenceGenome/queryReferenceGenomes',
   stageOutputDownload: '/stageOutput/download'
 }

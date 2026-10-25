@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import DashboardView from './views/DashboardView.vue'
 import ProjectsView from './views/ProjectsView.vue'
@@ -7,13 +7,17 @@ import TasksView from './views/TasksView.vue'
 import NewTaskView from './views/analysisTaskCreation/index.vue'
 import TaskUploadView from './views/analysisTaskCreation/TaskUpload.vue'
 import TaskDetailView from './views/TaskDetailView.vue'
+import TaskResultsView from './views/TaskResultsView.vue'
 import ResultsView from './views/ResultsView.vue'
-import { tasks } from './data/mockData'
+import ReferenceLibraryView from './views/ReferenceLibraryView.vue'
 
 const activePage = ref('dashboard')
 const previousPage = ref('tasks')
 const collapsed = ref(false)
-let selectedPipelineId = -1
+const selectedPipelineId = ref<number | null>(null)
+const selectedResultStageId = ref<number | undefined>()
+const taskDetailOrigin = ref('tasks')
+const referenceNavigationLocked = ref(false)
 
 const menuGroups = [
   {
@@ -24,14 +28,13 @@ const menuGroups = [
       { id: 'tasks', label: '任务管理', icon: 'List' }
       // { id: 'results', label: '结果中心', icon: 'DataAnalysis' }
     ]
+  },
+  {
+    label: '资源',
+    items: [
+      { id: 'references', label: '参考序列库', icon: 'Coin' }
+    ]
   }
-  // {
-  //   label: '资源',
-  //   items: [
-  //     { id: 'references', label: '参考数据库', icon: 'Coin' },
-  //     { id: 'downloads', label: '下载中心', icon: 'Download' }
-  //   ]
-  // }
 ]
 
 const pageTitle = computed(() => {
@@ -41,6 +44,7 @@ const pageTitle = computed(() => {
   if (activePage.value === 'new-task') return '新建分析任务'
   if (activePage.value === 'task-upload') return '上传任务数据'
   if (activePage.value === 'task-detail') return '任务详情'
+  if (activePage.value === 'task-results') return '任务结果'
   return item?.label || '页面'
 })
 
@@ -53,12 +57,18 @@ const currentComponent = computed(
       'new-task': NewTaskView,
       'task-upload': TaskUploadView,
       'task-detail': TaskDetailView,
-      results: ResultsView
+      'task-results': TaskResultsView,
+      results: ResultsView,
+      references: ReferenceLibraryView
     })[activePage.value]
 )
 
 function navigate(page) {
-  if (page === 'references' || page === 'downloads') {
+  if (activePage.value === 'references' && page !== 'references' && referenceNavigationLocked.value) {
+    ElMessage.warning('参考上传正在进行或结果待核实，请先在参考序列库页面完成处理再离开')
+    return
+  }
+  if (page === 'downloads') {
     ElMessage.info('该模块将在后续版本接入')
     return
   }
@@ -69,23 +79,45 @@ function navigate(page) {
 
 
 const currentComponentProps = computed(() => {
-  if(activePage.value === 'task-detail'){
+  if (activePage.value === 'task-detail' || activePage.value === 'task-results') {
     return {
-      pipelineId: selectedPipelineId
+      pipelineId: selectedPipelineId.value,
+      ...(activePage.value === 'task-results' ? { stageId: selectedResultStageId.value } : {})
     }
   }
   return {}
 })
 
-function viewTask(pipelineId) {
-
-  console.log("view task event "+pipelineId)
-  previousPage.value = activePage.value
+function viewTask(pipelineId: number) {
+  if (!Number.isInteger(pipelineId) || pipelineId <= 0) {
+    ElMessage.error('任务编号无效')
+    return
+  }
+  if (!['task-detail', 'task-results'].includes(activePage.value)) taskDetailOrigin.value = activePage.value
+  selectedPipelineId.value = pipelineId
   activePage.value = 'task-detail'
-  selectedPipelineId = pipelineId
+}
+
+function viewTaskResults(target: { pipelineId: number; stageId?: number }) {
+  if (!Number.isInteger(target.pipelineId) || target.pipelineId <= 0) {
+    ElMessage.error('任务编号无效')
+    return
+  }
+  if (!['task-detail', 'task-results'].includes(activePage.value)) taskDetailOrigin.value = activePage.value
+  selectedPipelineId.value = target.pipelineId
+  selectedResultStageId.value = target.stageId
+  activePage.value = 'task-results'
 }
 
 function handleBack() {
+  if (activePage.value === 'task-results') {
+    activePage.value = 'task-detail'
+    return
+  }
+  if (activePage.value === 'task-detail') {
+    activePage.value = taskDetailOrigin.value
+    return
+  }
   activePage.value = previousPage.value === 'task-detail' ? 'tasks' : previousPage.value
 }
 </script>
@@ -114,7 +146,7 @@ function handleBack() {
               {
                 active:
                   activePage === item.id ||
-                  (item.id === 'tasks' && ['new-task', 'task-upload', 'task-detail'].includes(activePage))
+                  (item.id === 'tasks' && ['new-task', 'task-upload', 'task-detail', 'task-results'].includes(activePage))
               }
             ]"
             @click="navigate(item.id)"
@@ -213,10 +245,12 @@ function handleBack() {
         <Transition name="page" mode="out-in">
           <component
             :is="currentComponent"
-            :key="activePage"
+            :key="['task-detail', 'task-results'].includes(activePage) ? `${activePage}:${selectedPipelineId}` : activePage"
             v-bind="currentComponentProps"
             @navigate="navigate"
+            @navigation-lock="referenceNavigationLocked = $event"
             @view-task="viewTask"
+            @view-results="viewTaskResults"
             @cancel="handleBack"
             @upload="navigate('task-upload')"
             @submitted="navigate('tasks')"

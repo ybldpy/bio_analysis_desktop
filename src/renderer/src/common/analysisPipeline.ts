@@ -1,8 +1,9 @@
 import { analysisPipelineTypeCodes } from "../api/analysisPipeline"
 
 export interface AnalysisPipelineStageOutput {
-    urls: Record<string, any>
-    inline: Record<string, any>
+    urls: Record<string, any> | null
+    inline: Record<string, any> | null
+    parseErrors?: { urls?: string; inline?: string }
 }
 
 export interface AnalysisPipelineStage {
@@ -10,6 +11,7 @@ export interface AnalysisPipelineStage {
     stageName: string
     status: number
     startTime: Date | null
+    endTime?: Date | null
     stageType: number
     output: AnalysisPipelineStageOutput
 }

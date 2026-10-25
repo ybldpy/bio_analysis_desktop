@@ -1,0 +1,20 @@
+{
+  "success": false,
+  "domAssertions": 0,
+  "rendererFailure": {
+    "reason": "launch-failed",
+    "exitCode": 49
+  },
+  "error": "Renderer gone: launch-failed (exitCode 49)",
+  "requests": [],
+  "queries": [],
+  "detailsRead": [],
+  "simulatedUpdates": [],
+  "simulatedUploads": [],
+  "simulatedDownloads": [],
+  "blockedFileSaves": 0,
+  "screenshots": [],
+  "rendererErrors": [],
+  "realNetworkRequests": 0,
+  "uploadRequests": 0
+}

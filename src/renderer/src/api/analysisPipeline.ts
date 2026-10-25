@@ -1,15 +1,7 @@
 import type { AnalysisPipeline, AnalysisPipelineStage } from '../common/analysisPipeline'
 import {backendService, backendAPI} from './backendService'
-
-interface AnalysisPipelineStageDTO {
-  stageId: number
-  stageName: string
-  status: number
-  startTime: string | null
-  stageType: number
-  outputUrl: string
-  outputInline: string
-}
+import { convertStageResult, type AnalysisPipelineStageDTO } from '../common/pipelineResults'
+import { confirmTaxonomy, type TaxonomyConfirmationData } from './pipelineResults'
 
 interface AnalysisPipelineDTO {
   pipelineId: number
@@ -21,6 +13,14 @@ interface AnalysisPipelineDTO {
 }
 
 export type AnalysisPipelineType = 100 | 101 | 200 | 400 | 401
+export type SequencingPlatform = 0 | 1001 | 1002 | 2001 | 2002
+
+export interface VirusTarget {
+  label: string
+  taxId: number
+  pipelineType: 100 | 101
+}
+
 export const taxonomyResultStatusCode = {
   confident: 0,
   ambiguous: 1,
@@ -128,6 +128,7 @@ export const pipelineStageTypeCode = {
   consensus: 41,
   depthCoverage: 42,
   referenceComparison: 43,
+  referenceSelection: 44,
   amr: 60,
   virulence: 61,
   mlst: 62,
@@ -167,9 +168,11 @@ function getMockPipeline(pipelineId: number): AnalysisPipelineDTO {
   }
 }
 
-async function doRequestPipeline(pipelineId: number): Promise<AnalysisPipelineDTO> {
+async function doRequestPipeline(pipelineId: number, signal?: AbortSignal): Promise<AnalysisPipelineDTO> {
 
   const response = await backendService.get(backendAPI.getPipeline, {
+    signal,
+    timeout: 30000,
     params: {
       pipelineId: pipelineId
     }
@@ -194,8 +197,10 @@ function convertPipelineDTO(dto: AnalysisPipelineDTO): AnalysisPipeline {
   }
 }
 
-export async function requestPipelineStages(pipelineId: number): Promise<AnalysisPipelineStage[]> {
+export async function requestPipelineStages(pipelineId: number, signal?: AbortSignal): Promise<AnalysisPipelineStage[]> {
   const response = await backendService.get(backendAPI.getPipelineStages, {
+    signal,
+    timeout: 30000,
     params:{
       pipelineId: pipelineId
     }
@@ -205,26 +210,12 @@ export async function requestPipelineStages(pipelineId: number): Promise<Analysi
     throw new Error(response.failMsg)
   }
 
-  return (response.data as AnalysisPipelineStageDTO[]).map((stageDTO) => {
-
-    return {
-      stageId: stageDTO.stageId,
-      stageName: stageDTO.stageName,
-      status: stageDTO.status,
-      startTime: new Date(stageDTO.startTime),
-      stageType: stageDTO.stageType,
-      output: {
-        urls: stageDTO.outputUrl === null? null:JSON.parse(stageDTO.outputUrl),
-        inline: stageDTO.outputInline === null?null:JSON.parse(stageDTO.outputInline)
-      }
-    }
-
-  }) as AnalysisPipelineStage[]
+  return (response.data as AnalysisPipelineStageDTO[]).map(convertStageResult)
 
 }
 
-export async function requestPipeline(pipelineId: number): Promise<AnalysisPipeline> {
-  const pipelineDTO = await doRequestPipeline(pipelineId)
+export async function requestPipeline(pipelineId: number, signal?: AbortSignal): Promise<AnalysisPipeline> {
+  const pipelineDTO = await doRequestPipeline(pipelineId, signal)
   return convertPipelineDTO(pipelineDTO)
 }
 
@@ -287,6 +278,12 @@ export async function fetchReferenceGenomeList(
 
 }
 
+export async function fetchVirusTargets(): Promise<RawResponse<VirusTarget[]>> {
+  return await backendService.get<RawResponse<VirusTarget[]>, RawResponse<VirusTarget[]>>(
+    backendAPI.virusTargets
+  )
+}
+
 export async function canUseBatchPrefix(prefix, projectId) {
   // TODO: replace with backend API.
   const response = await backendService.post(backendAPI.pipelineNamePrefixCheck, {
@@ -307,7 +304,8 @@ interface AnalysisTaskBuildRequest {
   pipelineType: number
   pipelineStageParameters: {
     taxId: number | null
-    extraParameters: null
+    sequencingPlatform: SequencingPlatform
+    extraParams: Record<string, unknown>
   }
 }
 
@@ -316,12 +314,48 @@ export interface CreatedAnalysisTask {
   id: number
 }
 
+export function validateEnabledReferenceIds(value: unknown): asserts value is number[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('本次任务至少需要选择一条参考序列，请返回创建页面确认参考范围')
+  }
+  for (const id of value) {
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw new Error('参考序列 ID 必须是正整数，请返回创建页面重新确认')
+    }
+  }
+  if (new Set(value).size !== value.length) {
+    throw new Error('参考序列 ID 不能重复，请返回创建页面重新确认')
+  }
+}
+
 export async function requestBuildAnalysisTasks(
-  tasks: Array<{ name: string }>,
+  tasks: Array<{ name: string; sequencingPlatform?: SequencingPlatform | null }>,
   projectId: number,
   pipelineType: number,
-  referenceId: number | null
+  parameters: {
+    referenceId?: number | null
+    taxId?: number | null
+    enabledReferenceIds?: number[] | null
+  }
 ): Promise<RawResponse<number[]>> {
+  if (tasks.length === 0) {
+    throw new Error('至少需要创建一个分析任务')
+  }
+
+  const isVirus =
+    pipelineType === analysisPipelineTypeCodes.regularVirus ||
+    pipelineType === analysisPipelineTypeCodes.virusCovid
+
+  if (
+    isVirus &&
+    (parameters.taxId == null || !Number.isInteger(parameters.taxId) || parameters.taxId <= 0)
+  ) {
+    throw new Error('请选择有效的病毒分析目标')
+  }
+
+  if (isVirus && parameters.enabledReferenceIds != null) {
+    validateEnabledReferenceIds(parameters.enabledReferenceIds)
+  }
 
   const requestBody = {
     projectId: projectId,
@@ -333,9 +367,21 @@ export async function requestBuildAnalysisTasks(
 
     return {
       pipelineName: task.name,
-      pipelineParameters: {
-        referenceId: referenceId
-      }
+      pipelineParameters: isVirus
+        ? {
+            taxId: parameters.taxId,
+            ...(parameters.enabledReferenceIds === undefined
+              ? {}
+              : { enabledReferenceIds: parameters.enabledReferenceIds === null
+                  ? null
+                  : [...parameters.enabledReferenceIds] }),
+            sequencingPlatform: task.sequencingPlatform ?? 0,
+            extraParams: {}
+          }
+        : {
+            referenceId: parameters.referenceId ?? null,
+            sequencingPlatform: task.sequencingPlatform ?? 0
+          }
     }
   })
   requestBody.pipelines = pipelines
@@ -443,17 +489,11 @@ async function doAnalysisUploadFile(formData): Promise<RawResponse<number>> {
   }
 }
 
-export async function doComfirmTaxonomy(stageId: number, taxId: number):Promise<RawResponse<void>>{
-
-
-
-  await new Promise((res) => {
-    setTimeout(res, 600);
-  })
-  //TODO
-  return ({} as RawResponse<void>)
-
-
+export async function doComfirmTaxonomy(
+  stageId: number,
+  taxId: number
+): Promise<RawResponse<TaxonomyConfirmationData | null>> {
+  return confirmTaxonomy({ stageId, taxId })
 }
 
 

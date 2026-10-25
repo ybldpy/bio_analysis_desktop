@@ -2,8 +2,10 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
+    analysisPipelineTypeCodes,
     requestBuildAnalysisTasks,
     requestStartPipeline,
+    validateEnabledReferenceIds,
     type CreatedAnalysisTask
 } from '../../api/analysisPipeline'
 import {
@@ -74,6 +76,9 @@ const emit = defineEmits<{
 const taskCreateCompleted = ref(false)
 
 const taskUploadRequest = takeTaskUploadRequest()
+const enabledReferenceIds = Array.isArray(taskUploadRequest?.enabledReferenceIds)
+    ? [...taskUploadRequest.enabledReferenceIds]
+    : taskUploadRequest?.enabledReferenceIds
 const phase = ref<UploadPhase>(
     taskUploadRequest ? 'ready' : 'missing'
 )
@@ -110,6 +115,13 @@ const tasks = reactive<TaskUploadItem[]>(
 const project = taskUploadRequest?.project ?? null
 const referenceGenome =
     taskUploadRequest?.referenceGenome ?? null
+const virusTarget = taskUploadRequest?.virusTarget ?? null
+const isVirusAnalysis =
+    taskUploadRequest?.analysisType === analysisPipelineTypeCodes.regularVirus ||
+    taskUploadRequest?.analysisType === analysisPipelineTypeCodes.virusCovid
+const pipelineType = isVirusAnalysis
+    ? virusTarget?.pipelineType
+    : taskUploadRequest?.analysisType
 
 const isWorking = computed(
     () =>
@@ -203,6 +215,11 @@ function getTaskRowKey(item: TaskUploadItem): string {
 }
 
 function getErrorMessage(error: unknown): string {
+    const failMsg = (error as { response?: { data?: { failMsg?: unknown } } })
+        ?.response?.data?.failMsg
+    if (typeof failMsg === 'string' && failMsg.trim()) {
+        return failMsg.trim()
+    }
     if (error instanceof Error) {
         return error.message
     }
@@ -229,11 +246,21 @@ async function createTasks(): Promise<boolean> {
     creationErrorMessage.value = ''
 
     try {
+        if (isVirusAnalysis && !virusTarget) {
+            throw new Error('缺少分析目标，请返回创建页面重新选择')
+        }
+        let parameters: { referenceId?: number | null; taxId?: number; enabledReferenceIds?: number[] } = {
+            referenceId: referenceGenome?.refId ?? null
+        }
+        if (isVirusAnalysis) {
+            validateEnabledReferenceIds(enabledReferenceIds)
+            parameters = { taxId: virusTarget.taxId, enabledReferenceIds: [...enabledReferenceIds] }
+        }
         const response = await requestBuildAnalysisTasks(
             taskUploadRequest.tasks,
             taskUploadRequest.project.pid,
-            taskUploadRequest.analysisType,
-            taskUploadRequest.referenceGenome?.refId ?? null
+            pipelineType,
+            parameters
         )
 
         if (response.status !== RAW_RESPONSE_STATUS_OK) {
@@ -618,14 +645,20 @@ const taskListView = computed(() => {
                         {{ project?.projectName ?? '--' }}
                     </el-descriptions-item>
                     <el-descriptions-item label="分析类型">
-                        {{ getAnalysisPipelineTypeName(taskUploadRequest.analysisType) }}
+                        {{ getAnalysisPipelineTypeName(pipelineType) }}
                     </el-descriptions-item>
-                    <el-descriptions-item label="参考基因组">
-                        {{
+                    <el-descriptions-item :label="isVirusAnalysis ? '分析目标' : '参考基因组'">
+                        <template v-if="isVirusAnalysis">
+                            {{ virusTarget ? `${virusTarget.label} · Tax ID ${virusTarget.taxId}` : '--' }}
+                        </template>
+                        <template v-else>{{
                             referenceGenome
-                                ? `${referenceGenome.speciesName} · Tax ID ${referenceGenome.taxId}`
+                                ? `${referenceGenome.refseqName} · Tax ID ${referenceGenome.taxId}`
                                 : '--'
-                        }}
+                        }}</template>
+                    </el-descriptions-item>
+                    <el-descriptions-item v-if="isVirusAnalysis" label="本次参考范围">
+                        已选择 {{ enabledReferenceIds?.length ?? 0 }} 条参考序列
                     </el-descriptions-item>
                 </el-descriptions>
             </el-card>
